@@ -1,0 +1,6 @@
+.env
+access_token.json
+alerts_log.db
+__pycache__/
+*.pyc
+data/nse_instruments.csv

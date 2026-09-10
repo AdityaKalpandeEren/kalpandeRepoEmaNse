@@ -1,0 +1,9 @@
+# One NSE trading symbol per line. Lines starting with # are ignored.
+RELIANCE
+TCS
+HDFCBANK
+INFY
+ICICIBANK
+SBIN
+TMPV
+AXISBANK
