@@ -1,4 +1,4 @@
-# One NSE trading symbol per line. Lines starting with # are ignored.
+# Existing
 RELIANCE
 TCS
 HDFCBANK
@@ -7,3 +7,28 @@ ICICIBANK
 SBIN
 TMPV
 AXISBANK
+ANTELOPUS
+
+# Add - today's momentum / relative strength
+ADANIENT
+ADANIPORTS
+COALINDIA
+TATASTEEL
+ONGC
+NTPC
+MRPL
+SHKTIPUMP
+ENVIRO
+MAXHEALTH
+LTF
+LT
+BAJAJFINSV
+TITAN
+
+# Additional high-volume breakout candidates
+RELIANCEPOWER
+IRB
+DLF
+GMRINFRA
+UNIONBANK
+HINDZINC

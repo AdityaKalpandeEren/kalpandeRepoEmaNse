@@ -24,15 +24,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # --- Strategy parameters ---
 EMA_PERIOD = 20
 VOLUME_AVG_PERIOD = 20
-VOLUME_MULTIPLIER = 0.01          # signal candle volume must be > 2x the avg
+VOLUME_MULTIPLIER = 2.0          # signal candle volume must be > 2x the avg
 CANDLE_INTERVAL_MINUTES = 5
 RISK_REWARD_RATIO = 1.5
-MAX_RISK_PCT = 1.0             # skip signal if stop-loss implies >1.5% risk
+MAX_RISK_PCT = 0.015             # skip signal if stop-loss implies >1.5% risk
 
 # --- VWAP retest-for-long parameters ---
 RETEST_TREND_LOOKBACK = 5        # how many prior candles to check for an established above-VWAP trend
 RETEST_MIN_CANDLES_ABOVE = 3     # at least this many of those prior candles must close above VWAP
-RETEST_TOUCH_BUFFER_PCT = 0.05  # 0.1% buffer - counts as "touching" VWAP even if it doesn't hit exactly
+RETEST_TOUCH_BUFFER_PCT = 0.001  # 0.1% buffer - counts as "touching" VWAP even if it doesn't hit exactly
 
 # --- Runtime ---
 POLL_SECONDS = 60                # how often the loop checks for new candles
