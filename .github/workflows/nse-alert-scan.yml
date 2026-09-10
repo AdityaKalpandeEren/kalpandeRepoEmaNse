@@ -1,6 +1,10 @@
 name: NSE Alert Scan
 
 on:
+  push:
+    branches:
+      - main
+
   schedule:
     - cron: "1-59/5 * * * *"
 
