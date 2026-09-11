@@ -76,11 +76,11 @@ def main():
         print(f"Outside NSE market hours ({datetime.now(IST).strftime('%H:%M:%S')} IST) - skipping.")
         return
 
-    if not config.UPSTOX_ACCESS_TOKEN_ENV:
+    if not config.UPSTOX_ACCESS_TOKEN:
         print("No UPSTOX_ACCESS_TOKEN env var set - add today's token as a GitHub secret.")
         return
 
-    access_token = config.UPSTOX_ACCESS_TOKEN_ENV
+    access_token = config.UPSTOX_ACCESS_TOKEN
 
     watchlist = load_symbol_list("watchlist.txt")
     dynamic_shortlist = build_dynamic_shortlist(access_token)
