@@ -1,37 +1,40 @@
 """
-Runs ONE scan pass across the watchlist and exits - designed to be
-triggered on a schedule (e.g. every 5 minutes during NSE market hours)
-by GitHub Actions, mirroring the BTC bot's scan_once.py.
+Runs ONE scan pass and exits - designed to be triggered on a schedule
+by GitHub Actions instead of looping forever on your own machine.
 
-Auth: prefers a long-lived (1-year) read-only Analytics Access Token
-(account.upstox.com/developer/apps -> Analytics tab -> Generate Token),
-set as config.UPSTOX_ACCESS_TOKEN / the UPSTOX_ACCESS_TOKEN GitHub
-secret - no daily refresh needed. Falls back to the daily-refresh OAuth
-flow's access_token.json for local runs if that token isn't set.
+Two-stage scan:
+1. Cheap prefilter: one bulk OHLC API call across universe.txt (a
+   broad candidate list) to find symbols trading near today's high
+   on a green day - i.e. "near breakout" right now.
+2. Full check: the existing EMA-cross and VWAP-retest logic, run only
+   on watchlist.txt (always) plus whatever passed stage 1 (dynamic).
+
+Unlike the BTC bot, this needs a fresh Upstox access token each day -
+supply it via the UPSTOX_ACCESS_TOKEN GitHub secret (paste in the
+token from `python auth/get_token.py` each trading morning). The
+workflow's cron is scoped to NSE market hours, but this script also
+checks the time itself as a safety net (e.g. if you trigger it
+manually outside market hours).
 """
-import config
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import config
 from data.instruments import get_instrument_key
-from data.upstox_client import get_intraday_candles
+from data.upstox_client import get_intraday_candles, get_bulk_ohlc
+from strategy.prefilter import find_near_breakout
 from strategy.screener import check_signal, check_vwap_retest, evaluate
 from alerts.telegram_bot import send_alert, format_signal_message, format_retest_message
 
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def load_access_token() -> str:
-    if config.UPSTOX_ACCESS_TOKEN:
-        return config.UPSTOX_ACCESS_TOKEN
-    import json
-    with open(config.TOKEN_FILE) as f:
-        return json.load(f)["access_token"]
-
-
-def load_watchlist() -> list:
-    with open("watchlist.txt") as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+def load_symbol_list(filename: str) -> list:
+    try:
+        with open(filename) as f:
+            return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    except FileNotFoundError:
+        return []
 
 
 def is_market_hours() -> bool:
@@ -42,16 +45,52 @@ def is_market_hours() -> bool:
     return active_from <= now <= close_t
 
 
+def build_dynamic_shortlist(access_token: str) -> list:
+    """Stage 1: cheap bulk-OHLC prefilter over universe.txt. Returns a
+    list of trading symbols (not instrument_keys) that are near breakout."""
+    universe = load_symbol_list("universe.txt")
+    if not universe:
+        return []
+
+    symbol_to_key = {}
+    for symbol in universe:
+        try:
+            symbol_to_key[symbol] = get_instrument_key(symbol)
+        except ValueError as e:
+            print(f"Skipping '{symbol}' in universe.txt: {e}")
+
+    if not symbol_to_key:
+        return []
+
+    ohlc_map = get_bulk_ohlc(list(symbol_to_key.values()), access_token)
+    passed_keys = set(find_near_breakout(ohlc_map))
+
+    key_to_symbol = {v: k for k, v in symbol_to_key.items()}
+    shortlist = [key_to_symbol[k] for k in passed_keys if k in key_to_symbol]
+    print(f"Stage 1 prefilter: {len(shortlist)}/{len(universe)} near breakout: {shortlist}")
+    return shortlist
+
+
 def main():
-    now = datetime.now(IST)
     if not is_market_hours():
-        print(f"[{now.strftime('%H:%M:%S')} IST] Outside market hours - skipping this pass.")
+        print(f"Outside NSE market hours ({datetime.now(IST).strftime('%H:%M:%S')} IST) - skipping.")
         return
 
-    access_token = load_access_token()
-    watchlist = load_watchlist()
+    if not config.UPSTOX_ACCESS_TOKEN_ENV:
+        print("No UPSTOX_ACCESS_TOKEN env var set - add today's token as a GitHub secret.")
+        return
 
-    for symbol in watchlist:
+    access_token = config.UPSTOX_ACCESS_TOKEN_ENV
+
+    watchlist = load_symbol_list("watchlist.txt")
+    dynamic_shortlist = build_dynamic_shortlist(access_token)
+
+    # watchlist is always scanned; the dynamic shortlist adds today's
+    # near-breakout candidates on top, deduped, watchlist order first.
+    seen = set(watchlist)
+    combined = list(watchlist) + [s for s in dynamic_shortlist if not (s in seen or seen.add(s))]
+
+    for symbol in combined:
         try:
             instrument_key = get_instrument_key(symbol)
             df = get_intraday_candles(instrument_key, config.CANDLE_INTERVAL_MINUTES, access_token)

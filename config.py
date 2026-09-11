@@ -34,6 +34,10 @@ RETEST_TREND_LOOKBACK = 5        # how many prior candles to check for an establ
 RETEST_MIN_CANDLES_ABOVE = 3     # at least this many of those prior candles must close above VWAP
 RETEST_TOUCH_BUFFER_PCT = 0.001  # 0.1% buffer - counts as "touching" VWAP even if it doesn't hit exactly
 
+# --- Dynamic near-breakout prefilter (stage 1 of the two-stage scanner) ---
+BREAKOUT_MAX_PCT_FROM_HIGH = 0.005   # within 0.5% of today's high counts as "near breakout"
+BREAKOUT_MIN_PCT_FROM_OPEN = 0.0     # must be a green day (close >= open) to qualify
+
 # --- Runtime ---
 POLL_SECONDS = 60                # how often the loop checks for new candles
 SKIP_FIRST_MINUTES = 15          # ignore signals in first 15 min after market open
