@@ -1,0 +1,87 @@
+# Broad candidate pool for the dynamic near-breakout scanner (stage 1).
+# This is NOT the watchlist - watchlist.txt symbols are always scanned
+# regardless of this file. Symbols here only get the full EMA/VWAP
+# check on days they're trading near their high with a green day.
+#
+# This is a starting seed, not an official/current Nifty 500 list -
+# add or remove symbols freely, same one-per-line format as
+# watchlist.txt. Up to 500 symbols total (Upstox's bulk-OHLC limit).
+
+RELIANCE
+TCS
+HDFCBANK
+INFY
+ICICIBANK
+SBIN
+TATAMOTORS
+AXISBANK
+ADANIENT
+ADANIPORTS
+COALINDIA
+TATASTEEL
+ONGC
+NTPC
+MRPL
+SHAKTIPUMP
+MAXHEALTH
+LTF
+LT
+BAJAJFINSV
+TITAN
+IRB
+DLF
+GMRINFRA
+UNIONBANK
+HINDZINC
+HINDUNILVR
+ITC
+KOTAKBANK
+BHARTIARTL
+BAJFINANCE
+ASIANPAINT
+MARUTI
+SUNPHARMA
+WIPRO
+ULTRACEMCO
+NESTLEIND
+HCLTECH
+TECHM
+POWERGRID
+JSWSTEEL
+GRASIM
+CIPLA
+DRREDDY
+EICHERMOT
+BRITANNIA
+DIVISLAB
+HEROMOTOCO
+BPCL
+INDUSINDBK
+TATACONSUM
+APOLLOHOSP
+BAJAJ-AUTO
+SBILIFE
+HDFCLIFE
+UPL
+VEDL
+PNB
+BANKBARODA
+CANBK
+IDFCFIRSTB
+FEDERALBNK
+ZOMATO
+NYKAA
+PAYTM
+IRCTC
+IEX
+RVNL
+BHEL
+BEL
+HAL
+COCHINSHIP
+MAZDOCK
+SUZLON
+YESBANK
+IDEA
+RPOWER
+ANTELOPUS

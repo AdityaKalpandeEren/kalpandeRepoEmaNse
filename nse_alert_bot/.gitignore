@@ -1,0 +1,9 @@
+.env
+access_token.json
+alerts_log.db
+paper_trades.db
+backtest/results/
+paper_trading/results/
+__pycache__/
+*.pyc
+data/nse_instruments.csv
