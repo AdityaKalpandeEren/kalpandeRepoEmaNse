@@ -17,7 +17,7 @@ TATASTEEL
 ONGC
 NTPC
 MRPL
-SHKTIPUMP
+SHAKTIPUMP
 ENVIRO
 MAXHEALTH
 LTF
@@ -26,9 +26,43 @@ BAJAJFINSV
 TITAN
 
 # Additional high-volume breakout candidates
-RELIANCEPOWER
+RPOWER
 IRB
 DLF
-GMRINFRA
+GMRAIRPORT
 UNIONBANK
 HINDZINC
+
+# Added 2026-09-28 - GOOD: index stocks in an uptrend (above SMA50 + SMA200,
+# within 10% of 52w high), strongest 3-month relative strength vs NIFTY
+# Large caps (NIFTY 50 / Next 50)
+DIVISLAB
+ETERNAL
+BOSCHLTD
+MOTHERSON
+ZYDUSLIFE
+TORNTPHARM
+APOLLOHOSP
+CGPOWER
+# Mid caps (NIFTY Midcap 50)
+PAYTM
+LAURUSLABS
+APLAPOLLO
+MCX
+AUROPHARMA
+NYKAA
+PHOENIXLTD
+MANKIND
+
+# Added 2026-09-28 - ONE TO WATCH: strong vs NIFTY and above SMA200, pulling
+# back now (below SMA50 or >10% off the high) - watch for the trend to resume
+TVSMOTOR
+BAJAJ-AUTO
+HAL
+LODHA
+KOTAKBANK
+JSWSTEEL
+SOLARINDS
+COFORGE
+NAUKRI
+OIL
