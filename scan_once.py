@@ -71,9 +71,33 @@ def build_dynamic_shortlist(access_token: str) -> list:
     return shortlist
 
 
+def _fetcher(access_token: str):
+    return lambda s: get_intraday_candles(get_instrument_key(s), config.CANDLE_INTERVAL_MINUTES, access_token)
+
+
+def _research_after_close(now):
+    """After the close: final paper-trade exits + the EOD report, once per
+    day (paper_trading/research_live.py). No-op otherwise."""
+    if not config.LIVE_RESEARCH_ENABLED or now.weekday() >= 5 or not config.UPSTOX_ACCESS_TOKEN:
+        return
+    from paper_trading.research_live import ResearchPass, session_over
+    if not session_over(now):
+        return
+    rp = ResearchPass(now)
+    if rp.begin():
+        try:
+            rp.finish_day(_fetcher(config.UPSTOX_ACCESS_TOKEN))
+        finally:
+            rp.end()
+
+
 def main():
     if not is_market_hours():
         print(f"Outside NSE market hours ({datetime.now(IST).strftime('%H:%M:%S')} IST) - skipping.")
+        try:
+            _research_after_close(datetime.now(IST))
+        except Exception as e:
+            print(f"Research EOD error: {e!r}")
         return
 
     if not config.UPSTOX_ACCESS_TOKEN:
@@ -89,6 +113,21 @@ def main():
     # near-breakout candidates on top, deduped, watchlist order first.
     seen = set(watchlist)
     combined = list(watchlist) + [s for s in dynamic_shortlist if not (s in seen or seen.add(s))]
+
+    # Research strategies: live alerts + paper trading (config.LIVE_RESEARCH_*).
+    # Runs on the same candles fetched below, AFTER the production checks for
+    # each symbol; any failure in it is contained so it can never stop a
+    # production alert from going out.
+    research = None
+    if config.LIVE_RESEARCH_ENABLED:
+        try:
+            from paper_trading.research_live import ResearchPass
+            research = ResearchPass(datetime.now(IST))
+            if not research.begin():
+                research = None
+        except Exception as e:
+            print(f"Research pass disabled this run: {e!r}")
+            research = None
 
     for symbol in combined:
         try:
@@ -117,6 +156,29 @@ def main():
                 print(f">>> [TEST] BROAD VWAP ALERT SENT: {symbol} ({retest.aggressor})")
         except Exception as e:
             print(f"Error processing {symbol}: {e}")
+            continue
+
+        if research is not None:
+            try:
+                research.process_symbol(symbol, df)
+            except Exception as e:
+                print(f"Research error on {symbol}: {e!r}")
+
+    if research is not None:
+        try:
+            # Open paper trades on symbols that fell out of today's dynamic
+            # shortlist still need their exits checked.
+            research.catch_up_open(_fetcher(access_token))
+            research.end()
+        except Exception as e:
+            print(f"Research end-of-pass error: {e!r}")
+
+    # From 15:20 (config.LIVE_EOD_REPORT_*) the research day is over: final
+    # exits + EOD report, sent once. Runs inside the normal schedule.
+    try:
+        _research_after_close(datetime.now(IST))
+    except Exception as e:
+        print(f"Research EOD error: {e!r}")
 
 
 if __name__ == "__main__":

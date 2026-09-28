@@ -1,0 +1,61 @@
+{
+  "trained_at": "2026-09-27T09:10:22.597663+00:00",
+  "dataset": "backtest/ml/data/dataset_v3.csv",
+  "rows": 214779,
+  "symbols": 83,
+  "directions": [
+    "long"
+  ],
+  "split_days": {
+    "train": 142,
+    "val": 48,
+    "test": 48
+  },
+  "test_range": [
+    "2026-07-21",
+    "2026-09-25"
+  ],
+  "chosen": {
+    "feature_set": "v2_inputs",
+    "config": "hgb_leafy",
+    "threshold": 0.675
+  },
+  "val_selected": {
+    "n": 30,
+    "win_pct": 50.0,
+    "exp_r": 0.08,
+    "tot_r": 2.4,
+    "t": 0.49,
+    "pf": 1.24
+  },
+  "test_baseline": {
+    "n": 480,
+    "win_pct": 35.2,
+    "exp_r": -0.221,
+    "tot_r": -106.1,
+    "t": -5.35,
+    "pf": 0.58
+  },
+  "test_selected": {
+    "n": 0,
+    "win_pct": 0.0,
+    "exp_r": 0.0,
+    "tot_r": 0.0,
+    "t": 0.0,
+    "pf": 0.0
+  },
+  "test_baseline_days": {
+    "days": 48,
+    "days_pos": 12,
+    "day_t": -3.86,
+    "ex_best_day_exp_r": -0.241
+  },
+  "test_selected_days": {
+    "days": 0,
+    "days_pos": 0,
+    "day_t": 0.0,
+    "ex_best_day_exp_r": 0.0
+  },
+  "max_trades_per_day": 10,
+  "verdict": "INCONCLUSIVE: only 0 test trades cleared the threshold - too few to judge. Don't trade it; gather more data."
+}
