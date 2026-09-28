@@ -151,7 +151,7 @@ def main():
 
             retest = check_vwap_broad_TEST(symbol, df)
             if retest:
-                message = format_retest_message(retest)
+                message = format_retest_message(retest, label="VWAP BROAD TEST")
                 send_alert(message)
                 print(f">>> [TEST] BROAD VWAP ALERT SENT: {symbol} ({retest.aggressor})")
         except Exception as e:

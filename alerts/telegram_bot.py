@@ -21,7 +21,7 @@ def format_signal_message(signal) -> str:
     reward = signal.target - signal.entry
     rr = reward / risk if risk else 0
     return (
-        f"🟢 *{signal.symbol}* — Long setup\n"
+        f"🟢 *{signal.symbol}* — [EMA CROSS] Long setup\n"
         f"Entry: ₹{signal.entry}\n"
         f"Stop Loss: ₹{signal.stop_loss}\n"
         f"Target: ₹{signal.target}\n"
@@ -32,13 +32,13 @@ def format_signal_message(signal) -> str:
     )
 
 
-def format_retest_message(signal) -> str:
+def format_retest_message(signal, label: str = "VWAP RETEST") -> str:
     risk = signal.entry - signal.stop_loss
     reward = signal.target - signal.entry
     rr = reward / risk if risk else 0
     aggressor_emoji = "🟢" if signal.aggressor == "BUY" else "🔴" if signal.aggressor == "SELL" else "⚪"
     return (
-        f"🔵 *{signal.symbol}* — VWAP Retest (Long)\n"
+        f"🔵 *{signal.symbol}* — [{label}] VWAP ({signal.aggressor} aggressor)\n"
         f"Entry: ₹{signal.entry}\n"
         f"Stop Loss: ₹{signal.stop_loss}\n"
         f"Target: ₹{signal.target}\n"
