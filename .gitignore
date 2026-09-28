@@ -4,3 +4,18 @@ alerts_log.db
 __pycache__/
 *.pyc
 data/nse_instruments.csv
+
+# research caches / runtime state - never commit
+backtest/cache/
+backtest/ml/cache/
+backtest/ml/data/dataset_v2.csv
+live_state/
+backtest/ml/data/dataset.csv
+backtest/ml/data/dataset_v3.csv
+backtest/ml/data/dataset_v32.csv
+backtest/ml/data/dataset_v33.csv
+
+# local outputs / editor temp files - never commit
+backtest/results/
+paper_trades.db
+*.swp

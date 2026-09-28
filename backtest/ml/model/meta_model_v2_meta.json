@@ -1,0 +1,61 @@
+{
+  "trained_at": "2026-09-27T07:05:55.267944+00:00",
+  "dataset": "backtest/ml/data/dataset_v2.csv",
+  "rows": 206643,
+  "symbols": 83,
+  "directions": [
+    "long"
+  ],
+  "split_days": {
+    "train": 142,
+    "val": 48,
+    "test": 48
+  },
+  "test_range": [
+    "2026-07-21",
+    "2026-09-25"
+  ],
+  "chosen": {
+    "feature_set": "full_v2",
+    "config": "logreg",
+    "threshold": 0.525
+  },
+  "val_selected": {
+    "n": 61,
+    "win_pct": 44.3,
+    "exp_r": -0.018,
+    "tot_r": -1.1,
+    "t": -0.15,
+    "pf": 0.95
+  },
+  "test_baseline": {
+    "n": 480,
+    "win_pct": 35.2,
+    "exp_r": -0.226,
+    "tot_r": -108.4,
+    "t": -5.46,
+    "pf": 0.57
+  },
+  "test_selected": {
+    "n": 2,
+    "win_pct": 0.0,
+    "exp_r": -1.837,
+    "tot_r": -3.7,
+    "t": -2.43,
+    "pf": 0.0
+  },
+  "test_baseline_days": {
+    "days": 48,
+    "days_pos": 14,
+    "day_t": -3.64,
+    "ex_best_day_exp_r": -0.246
+  },
+  "test_selected_days": {
+    "days": 2,
+    "days_pos": 0,
+    "day_t": -2.43,
+    "ex_best_day_exp_r": -2.593
+  },
+  "max_trades_per_day": 10,
+  "verdict": "INCONCLUSIVE: only 2 test trades cleared the threshold - too few to judge. Don't trade it; gather more data."
+}

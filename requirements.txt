@@ -1,3 +1,15 @@
 requests
 pandas
 python-dotenv
+# Research engine / ML models / news (paper_trading/research_live.py, backtest/ml/)
+numpy
+joblib
+# Pinned: the committed ML models (backtest/ml/model/*.joblib) were trained
+# with this exact version - a different one can fail to load them.
+scikit-learn==1.7.2
+# Earnings dates + headlines for L_ML_META_V2 (prices still come from Upstox)
+yfinance>=1.7.0
+curl_cffi>=0.7,<1.0
+# Optional Claude catalyst reader for L_ML_META_V3 - only used when the
+# ANTHROPIC_API_KEY secret is set (otherwise V3 uses its rule table).
+anthropic

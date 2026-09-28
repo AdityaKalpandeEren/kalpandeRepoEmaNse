@@ -1,0 +1,37 @@
+{
+  "chosen": {
+    "model": "hgb_small",
+    "k": 3
+  },
+  "test": {
+    "days": 235,
+    "avg_day%": -0.054,
+    "days+%": 44.3,
+    "t_day": -0.86,
+    "total%": -12.8,
+    "maxDD%": -20.4
+  },
+  "test_ic_mean": 0.05432578970109668,
+  "test_ic_t": 5.626259997672218,
+  "equal_weight": {
+    "days": 235,
+    "avg_day%": -0.134,
+    "days+%": 42.6,
+    "t_day": -3.48,
+    "total%": -27.3,
+    "maxDD%": -27.7
+  },
+  "rule": {
+    "days": 235,
+    "avg_day%": -0.028,
+    "days+%": 42.6,
+    "t_day": -0.35,
+    "total%": -8.1,
+    "maxDD%": -17.6
+  },
+  "test_range": [
+    "2025-10-15",
+    "2026-09-25"
+  ],
+  "verdict": "HAS RANKING SKILL (IC significant) but the top-K still loses after costs - the edge is smaller than intraday charges."
+}
