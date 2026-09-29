@@ -288,7 +288,11 @@ INDIA_NEWS_NAMES = {
 # "gemini" (default): Google AI Studio free tier, GEMINI_API_KEY.
 # "anthropic": Claude (paid), ANTHROPIC_API_KEY + a Claude model id below.
 NEWS_LLM_PROVIDER = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
-NEWS_LLM_MODEL = os.getenv("NEWS_LLM_MODEL", "gemini-flash-latest")
+# flash-lite: higher free-tier limits, and in live testing (2026-09-29) it
+# answered while gemini-flash-latest returned 503 "high demand" on every
+# call. On a 500/503 the fallback model is tried once before giving up.
+NEWS_LLM_MODEL = os.getenv("NEWS_LLM_MODEL", "gemini-flash-lite-latest")
+NEWS_LLM_FALLBACK_MODEL = os.getenv("NEWS_LLM_FALLBACK_MODEL", "gemini-flash-latest")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # --- Training ---

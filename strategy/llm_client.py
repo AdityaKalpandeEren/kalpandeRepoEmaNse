@@ -150,30 +150,44 @@ def _error_detail(resp) -> str:
 
 
 def _gemini(system: str, user: str, schema: dict, tag: str):
+    """Main model first; on an overload (500/503) the fallback model once.
+    A quota error (429) or failure of both pauses the LLM for the run."""
     global _blocked
     import requests
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model()}:generateContent"
-        resp = requests.post(url, headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=30, json={
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
-                                 "responseSchema": _to_gemini_schema(schema)},
-        })
-        if resp.status_code != 200:
-            if resp.status_code in (429, 500, 503):
-                _blocked = True
-                print(f"[llm] Gemini {resp.status_code} ({tag}) - LLM paused for the rest of this run, "
-                      f"using rules. {_error_detail(resp)}")
-            else:
-                print(f"[llm] Gemini {resp.status_code} ({tag}), using rules: {_error_detail(resp)}")
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
+                             "responseSchema": _to_gemini_schema(schema)},
+    }
+    models = [model()] + ([config.NEWS_LLM_FALLBACK_MODEL]
+                          if config.NEWS_LLM_FALLBACK_MODEL and config.NEWS_LLM_FALLBACK_MODEL != model() else [])
+    for i, m in enumerate(models):
+        try:
+            resp = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                                 headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=30, json=body)
+        except Exception as e:
+            print(f"[llm] Gemini call failed ({tag}, {m}), using rules: {e!r}")
             return None
-        parts = resp.json()["candidates"][0]["content"]["parts"]
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        return json.loads(text) if text else None
-    except Exception as e:
-        print(f"[llm] Gemini call failed ({tag}), using rules: {e!r}")
+        if resp.status_code == 200:
+            try:
+                parts = resp.json()["candidates"][0]["content"]["parts"]
+                text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+                return json.loads(text) if text else None
+            except Exception as e:
+                print(f"[llm] Gemini bad response ({tag}, {m}), using rules: {e!r}")
+                return None
+        if resp.status_code in (500, 503) and i + 1 < len(models):
+            print(f"[llm] Gemini {resp.status_code} on {m} ({tag}) - trying {models[i + 1]}")
+            continue
+        if resp.status_code in (429, 500, 503):
+            _blocked = True
+            print(f"[llm] Gemini {resp.status_code} on {m} ({tag}) - LLM paused for the rest of this run, "
+                  f"using rules. {_error_detail(resp)}")
+        else:
+            print(f"[llm] Gemini {resp.status_code} on {m} ({tag}), using rules: {_error_detail(resp)}")
         return None
+    return None
 
 
 def _claude_call(system: str, user: str, schema: dict, tag: str, max_tokens: int):
