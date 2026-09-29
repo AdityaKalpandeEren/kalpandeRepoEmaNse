@@ -237,8 +237,59 @@ ML_V2_NEWS_BOOST = 0.35
 ML_V2_NEWS_BOOST_PROB = 0.03
 ML_V2_NEWS_EXIT = 0.45
 ML_V2_NEWS_CACHE_SECONDS = 600
-ML_V2_NEWS_LLM_ENABLED = os.getenv("ML_V2_NEWS_LLM_ENABLED", "false").lower() == "true"
-ML_V2_NEWS_LLM_MODEL = os.getenv("ML_V2_NEWS_LLM_MODEL", "claude-opus-5")
+# LLM scoring of V2's headlines (strategy/llm_client.py, provider below).
+# Falls back to the keyword lexicon with no key / on any error.
+ML_V2_NEWS_LLM_ENABLED = os.getenv("ML_V2_NEWS_LLM_ENABLED", "true").lower() == "true"
+
+# --- Where NSE news comes from (strategy/india_news.py) ---
+# "rss" = Indian RSS feeds + Google News (fresh); "yahoo" = the old Yahoo
+# .NS / ^NSEI feeds, which were found days-to-weeks stale for NSE.
+INDIA_NEWS_SOURCE = os.getenv("INDIA_NEWS_SOURCE", "rss").lower()
+INDIA_NEWS_MARKET_FEEDS = [
+    "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",           # ET Markets
+    "https://economictimes.indiatimes.com/markets/stocks/news/rssfeeds/2146842.cms",  # ET Stocks
+    "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms",      # ET Economy
+    "https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",            # ET Industry
+    "https://www.business-standard.com/rss/markets-106.rss",                          # BS Markets
+    "https://www.business-standard.com/rss/companies-101.rss",                        # BS Companies
+    "https://www.livemint.com/rss/markets",                                           # Mint Markets
+    "https://www.livemint.com/rss/companies",                                         # Mint Companies
+]
+INDIA_NEWS_GOOGLE_ENABLED = os.getenv("INDIA_NEWS_GOOGLE_ENABLED", "true").lower() == "true"
+# How to find a company in the news when its registered (instrument
+# master) name is abbreviated or ambiguous: symbol -> (Google News search
+# phrase, word that must appear in a headline).
+INDIA_NEWS_NAMES = {
+    "DRREDDY": ("Dr Reddy's", "Reddy"), "DIVISLAB": ("Divi's Laboratories", "Divi"),
+    "SUNPHARMA": ("Sun Pharma", "Sun Pharma"), "APOLLOHOSP": ("Apollo Hospitals", "Apollo Hospital"),
+    "MEDANTA": ("Medanta", "Medanta"), "KIMS": ("KIMS Hospitals", "KIMS"),
+    "LALPATHLAB": ("Dr Lal PathLabs", "Lal Path"), "MAXHEALTH": ("Max Healthcare", "Max Healthcare"),
+    "ASTERDM": ("Aster DM Healthcare", "Aster DM"), "RAINBOW": ("Rainbow Children's Medicare", "Rainbow Children"),
+    "ABBOTINDIA": ("Abbott India", "Abbott India"), "POLYMED": ("Poly Medicure", "Poly Medicure"),
+    "TORNTPHARM": ("Torrent Pharma", "Torrent Pharma"), "ZYDUSLIFE": ("Zydus Lifesciences", "Zydus"),
+    "KCPSUGIND": ("KCP Sugar", "KCP Sugar"), "AVADHSUGAR": ("Avadh Sugar", "Avadh Sugar"),
+    "TRIVENI": ("Triveni Engineering", "Triveni"), "DALMIASUG": ("Dalmia Bharat Sugar", "Dalmia Bharat Sugar"),
+    "EIDPARRY": ("EID Parry", "Parry"), "RENUKA": ("Shree Renuka Sugars", "Renuka"),
+    "BAJAJHIND": ("Bajaj Hindusthan Sugar", "Bajaj Hindusthan"), "DWARKESH": ("Dwarikesh Sugar", "Dwarikesh"),
+    "BANARISUG": ("Bannari Amman Sugars", "Bannari Amman"), "NH": ("Narayana Health", "Narayana"),
+    "UTTAMSUGAR": ("Uttam Sugar", "Uttam Sugar"), "DHAMPURSUG": ("Dhampur Sugar", "Dhampur Sugar"),
+    # Registered names that are too generic to match on ("One 97" -> "one",
+    # "Union" -> Union Budget, "Solar", "Coal", "Info", "Multi", "APL" -> Apple...)
+    "PAYTM": ("Paytm", "Paytm"), "UNIONBANK": ("Union Bank of India", "Union Bank"),
+    "SOLARINDS": ("Solar Industries", "Solar Industries"), "COALINDIA": ("Coal India", "Coal India"),
+    "NAUKRI": ("Info Edge", "Info Edge"), "MCX": ("MCX India", "Multi Commodity Exchange"),
+    "APLAPOLLO": ("APL Apollo", "APL Apollo"), "NYKAA": ("Nykaa", "Nykaa"),
+    "ONGC": ("ONGC", "Oil and Natural Gas"), "MOTHERSON": ("Samvardhana Motherson", "Motherson"),
+    "CGPOWER": ("CG Power", "CG Power"), "LTF": ("L&T Finance", "L&T Finance"),
+    "LT": ("Larsen & Toubro", "Larsen"), "TMPV": ("Tata Motors", "Tata Motors"),
+}
+
+# --- LLM for the news / catalyst readers (V2 and V3) ---
+# "gemini" (default): Google AI Studio free tier, GEMINI_API_KEY.
+# "anthropic": Claude (paid), ANTHROPIC_API_KEY + a Claude model id below.
+NEWS_LLM_PROVIDER = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
+NEWS_LLM_MODEL = os.getenv("NEWS_LLM_MODEL", "gemini-flash-latest")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # --- Training ---
 ML_V2_VAL_FRAC = 0.2
@@ -329,10 +380,10 @@ ML_V3_SECTOR_OVERRIDES = {
 }
 
 # --- Live catalyst reader (strategy/llm_catalyst.py) ---
-# "auto" = use Claude when ANTHROPIC_API_KEY is set, the built-in sector
-# rule table otherwise. "false" forces rules only.
+# "auto" = use the news LLM (NEWS_LLM_PROVIDER above - Gemini by default)
+# when its key is set, the built-in sector rule table otherwise. "false"
+# forces rules only.
 ML_V3_LLM = os.getenv("ML_V3_LLM", "auto").lower()
-ML_V3_LLM_MODEL = os.getenv("ML_V3_LLM_MODEL", "claude-opus-5")
 ML_V3_NEWS_ENABLED = os.getenv("ML_V3_NEWS_ENABLED", "true").lower() == "true"
 ML_V3_NEWS_CACHE_SECONDS = 900
 ML_V3_STOCK_VETO = 0.35            # combined stock catalyst <= -this -> no long

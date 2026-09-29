@@ -14,12 +14,17 @@ Two layers:
   STOCK   the stock's own headlines (company-name matched, opinion pieces
           dropped - strategy/news_catalyst.py), read only when needed.
 
+Headlines: Indian RSS feeds (ET, Business Standard, Mint) + Google News
+per company - strategy/india_news.py (config.INDIA_NEWS_SOURCE="rss").
+
 Readers:
-  - Claude (config.ML_V3_LLM = "auto" + ANTHROPIC_API_KEY set, or "true"):
+  - LLM (config.ML_V3_LLM = "auto" + a key for config.NEWS_LLM_PROVIDER -
+    Gemini free tier by default - or "true"; strategy/llm_client.py):
     reads the headlines with the stock list and industry themes and
     returns structured JSON. Understands context keywords can't ("profit
-    falls less than feared", "RBI holds but signals cuts").
-  - Rules fallback (no key, or any Claude error): the V2 lexicon for
+    falls less than feared", "RBI holds but signals cuts"). Answers are
+    stored between runs so the same headlines are never asked twice.
+  - Rules fallback (no key, quota hit, or any error): the V2 lexicon for
     stock headlines + a table of unambiguous Indian sector rules below.
 The bot never fails because of this module; worst case it returns
 "no catalyst".
@@ -68,6 +73,26 @@ _SECTOR_RULES = [
     (r"\btariff (hike|increase)s?\b.{0,30}\b(telecom|mobile|jio|airtel|vodafone)\b|\b(telecom|mobile)\b.{0,30}\btariff (hike|increase)",
      {"TELECOM": 0.4}),
     (r"\bh-?1b\b.{0,40}\b(curbs?|fee|restrict|ban|tighten)", {"IT": -0.4}),
+    # Pharma / healthcare. The exemption rule sits BEFORE the generic pharma-
+    # tariff rule (first matching rule wins per headline): "US exempts Indian
+    # drugs from pharma tariff" is good news, not a tariff hit.
+    (r"\b(exempts?|exemption|spares?|relief)\b.{0,60}\b(pharma|drugs?|medicines?|generics?)\b|"
+     r"\b(pharma|drugs?|medicines?|generics?)\b.{0,60}\b(exempt\w*|spared)\b", {"PHARMA": 0.4}),
+    (r"\b(nppa|drug price control|price cap)\b.{0,40}\b(drugs?|medicines?|stents?|devices?)\b", {"PHARMA": -0.3}),
+    (r"\b(health insurance|ayushman|pm-jay)\b.{0,40}\b(expan\w*|hike|raise|cover)", {"HEALTHCARE": 0.3}),
+    # Sugar / ethanol
+    (r"\bsugar\b.{0,40}\bexports?\b.{0,30}\b(allow\w*|permit\w*|quota (raised|hiked|increased)|opens?)\b|"
+     r"\b(allow\w*|permit\w*)\b.{0,30}\bsugar exports?\b", {"SUGAR": 0.4}),
+    (r"\bsugar\b.{0,40}\bexports?\b.{0,30}\b(ban\w*|curbs?|restrict\w*|halt\w*)\b|\bban on sugar exports?\b|"
+     r"\b(bans?|curbs?|halts?|restricts?)\b.{0,20}\bsugar exports?\b", {"SUGAR": -0.4}),
+    (r"\bethanol\b.{0,50}\b(price|procurement)\b.{0,30}\b(hike|raised?|increase\w*)\b|"
+     r"\b(raises?|hikes?|increases?)\b.{0,30}\bethanol (price|procurement)", {"SUGAR": 0.4}),
+    (r"\b(minimum selling price|msp)\b.{0,30}\bsugar\b.{0,30}\b(hike|raised?|increase\w*)\b|"
+     r"\bsugar\b.{0,30}\b(msp|minimum selling price)\b.{0,30}\b(hike|raised?|increase\w*)\b", {"SUGAR": 0.4}),
+    (r"\b(frp|fair and remunerative price|cane price)\b.{0,40}\b(hike|raised?|increase\w*)\b|"
+     r"\b(hikes?|raises?|increases?)\b.{0,20}\b(frp|fair and remunerative price|cane price)\b", {"SUGAR": -0.2}),
+    (r"\bsugar prices?\b.{0,30}\b(rise|rises|jump\w*|surge\w*|firm\w*|climb\w*)\b", {"SUGAR": 0.3}),
+    (r"\bsugar prices?\b.{0,30}\b(fall|falls|drop\w*|slump\w*|slide\w*|decline\w*)\b", {"SUGAR": -0.3}),
     (r"\btariffs?\b.{0,40}\b(pharma|drugs?|medicines?)\b|\b(pharma|drugs?)\b.{0,40}\btariffs?\b", {"PHARMA": -0.4}),
     (r"\bdefen[cs]e\b.{0,40}\b(budget|orders?|procurement|contracts?|deals?)\b", {"DEFENCE": 0.3}),
     (r"\b(gst|excise)\b.{0,30}\b(cut|reduc)\w*\b.{0,30}\b(cars?|autos?|vehicles?|two-wheelers?)\b", {"AUTO": 0.4}),
@@ -100,44 +125,20 @@ def llm_enabled() -> bool:
     mode = config.ML_V3_LLM
     if mode == "false":
         return False
+    from strategy import llm_client
     if mode == "true":
         return True
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return llm_client.available()
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Claude
+# LLM (strategy/llm_client.py - Gemini by default, Claude optional)
 # ═══════════════════════════════════════════════════════════════════
-_client = None
 
-
-def _claude_json(system: str, user: str, schema: dict, max_tokens: int = 4096):
-    """Structured JSON from Claude, or None on ANY failure (-> rules)."""
-    global _client
-    try:
-        import anthropic
-    except ImportError:
-        return None
-    try:
-        if _client is None:
-            _client = anthropic.Anthropic(timeout=30.0, max_retries=1)
-        response = _client.beta.messages.create(
-            model=config.ML_V3_LLM_MODEL,
-            max_tokens=max_tokens,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            thinking={"type": "adaptive"},
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        if response.stop_reason == "refusal":
-            return None
-        text = next((b.text for b in response.content if b.type == "text"), None)
-        return json.loads(text) if text else None
-    except Exception as e:
-        print(f"[catalyst-v3] Claude call failed, using rules: {e!r}")
-        return None
+def _llm_json(system: str, user: str, schema: dict, max_tokens: int = 4096, tag: str = ""):
+    """Structured JSON from the configured LLM, or None on ANY failure (-> rules)."""
+    from strategy import llm_client
+    return llm_client.json_call(system, user, schema, tag=tag or "V3 catalyst", max_tokens=max_tokens)
 
 
 _MARKET_SCHEMA = {
@@ -205,6 +206,13 @@ def _all_themes() -> list:
 
 
 def _market_headlines(now) -> list:
+    if config.INDIA_NEWS_SOURCE == "rss":
+        # Indian market / economy / companies feeds (strategy/india_news.py):
+        # market-wide AND sector/company stories, since this layer's job is
+        # to find WHO a headline hits.
+        from strategy import india_news
+        return [x for x in india_news.all_market_headlines(_MARKET_LOOKBACK_H, now)
+                if not news_catalyst._OPINION_RX.search(x[1])][:60]
     items = []
     for feed in MARKET_FEEDS:
         items += news_catalyst.fetch_headlines(feed, _MARKET_LOOKBACK_H, now, market=True) \
@@ -235,7 +243,10 @@ def _raw_feed(ticker: str, now) -> list:
 
 def _rules_market(headlines) -> MarketRead:
     read = MarketRead(method="rules", n_headlines=len(headlines))
-    scores = [news_catalyst.score_headline(t) for _, t, _ in headlines]
+    # The market score reads only market-wide headlines: the Indian feeds
+    # are full of single-stock stories that say nothing about the market.
+    from strategy.india_news import MARKET_RX
+    scores = [news_catalyst.score_headline(t) for _, t, _ in headlines if MARKET_RX.search(t)]
     nz = [s for s in scores if s]
     read.market_score = round(sum(nz) / len(nz), 3) if nz else 0.0
     for _, title, _ in headlines:
@@ -249,7 +260,23 @@ def _rules_market(headlines) -> MarketRead:
     return read
 
 
+def _read_to_dict(read: MarketRead) -> dict:
+    return {"market_score": read.market_score, "themes": read.themes, "symbols": read.symbols,
+            "method": read.method, "n_headlines": read.n_headlines}
+
+
+def _read_from_dict(d: dict) -> MarketRead:
+    return MarketRead(market_score=d["market_score"],
+                      themes={k: tuple(v) for k, v in d["themes"].items()},
+                      symbols={k: tuple(v) for k, v in d["symbols"].items()},
+                      method=d["method"], n_headlines=d["n_headlines"])
+
+
 def market_read(universe=None) -> MarketRead:
+    """Market / industry read. The LLM answer is stored between runs
+    (strategy/llm_client.py cache): re-asked only when the headlines have
+    changed AND the stored read is older than config.ML_V3_NEWS_CACHE_SECONDS."""
+    from strategy import llm_client
     now_t = time.time()
     if _market_cache["read"] is not None and now_t - _market_cache["at"] < config.ML_V3_NEWS_CACHE_SECONDS:
         return _market_cache["read"]
@@ -258,20 +285,28 @@ def market_read(universe=None) -> MarketRead:
     read = None
     if headlines and llm_enabled():
         universe = universe or []
-        stock_lines = "\n".join(f"{s}: {sector_map.lookup(s).get('industry') or 'unknown'}" for s in universe)
-        listing = "\n".join(f"- {t}" + (f" — {s[:200]}" if s else "") for _, t, s in headlines)
-        data = _claude_json(
-            _MARKET_SYSTEM,
-            f"Industry themes: {', '.join(_all_themes())}\n\nStocks (symbol: industry):\n{stock_lines}\n\n"
-            f"Headlines (last {_MARKET_LOOKBACK_H}h):\n{listing}",
-            _MARKET_SCHEMA)
-        if data:
-            read = MarketRead(market_score=max(-1, min(1, float(data.get("market_score", 0)))),
-                              method="claude", n_headlines=len(headlines))
-            for it in data.get("theme_impacts", []):
-                read.themes[str(it["theme"]).upper()] = (max(-1, min(1, float(it["score"]))), it["reason"][:160])
-            for it in data.get("symbol_impacts", []):
-                read.symbols[str(it["symbol"]).upper()] = (max(-1, min(1, float(it["score"]))), it["reason"][:160])
+        key = llm_client.make_key("v3m", sorted(universe), [t for _, t, _ in headlines])
+        same, _ = llm_client.cache_get("v3m", key)
+        last, age = llm_client.cache_get("v3m", "latest", max_age_s=config.ML_V3_NEWS_CACHE_SECONDS)
+        if same or last:
+            read = _read_from_dict(same or last)
+        else:
+            stock_lines = "\n".join(f"{s}: {sector_map.lookup(s).get('industry') or 'unknown'}" for s in universe)
+            listing = "\n".join(f"- {t}" + (f" — {s[:200]}" if s else "") for _, t, s in headlines)
+            data = _llm_json(
+                _MARKET_SYSTEM,
+                f"Industry themes: {', '.join(_all_themes())}\n\nStocks (symbol: industry):\n{stock_lines}\n\n"
+                f"Headlines (last {_MARKET_LOOKBACK_H}h):\n{listing}",
+                _MARKET_SCHEMA, tag="V3 market")
+            if data:
+                read = MarketRead(market_score=max(-1, min(1, float(data.get("market_score", 0)))),
+                                  method=config.NEWS_LLM_PROVIDER, n_headlines=len(headlines))
+                for it in data.get("theme_impacts", []):
+                    read.themes[str(it["theme"]).upper()] = (max(-1, min(1, float(it["score"]))), it["reason"][:160])
+                for it in data.get("symbol_impacts", []):
+                    read.symbols[str(it["symbol"]).upper()] = (max(-1, min(1, float(it["score"]))), it["reason"][:160])
+                llm_client.cache_put("v3m", key, _read_to_dict(read))
+                llm_client.cache_put("v3m", "latest", _read_to_dict(read))
     if read is None:
         read = _rules_market(headlines)
     _market_cache.update(at=now_t, read=read)
@@ -285,6 +320,7 @@ _stock_cache = {}
 
 
 def stock_read(symbol: str, macro_note: str = "") -> StockRead:
+    from strategy import llm_client
     hit = _stock_cache.get(symbol)
     if hit and time.time() - hit[0] < config.ML_V3_NEWS_CACHE_SECONDS:
         return hit[1]
@@ -292,17 +328,24 @@ def stock_read(symbol: str, macro_note: str = "") -> StockRead:
     items = news_catalyst.fetch_headlines(symbol, config.ML_V2_NEWS_SYMBOL_LOOKBACK_HOURS, now)
     read = StockRead(n_headlines=len(items))
     if items and llm_enabled():
-        info = sector_map.lookup(symbol)
-        listing = "\n".join(f"- {t}" + (f" — {s[:300]}" if s else "") for _, t, s in items[:12])
-        data = _claude_json(
-            _STOCK_SYSTEM,
-            f"Stock: {symbol} ({info.get('industry') or 'unknown industry'}, themes {info['themes']})\n"
-            f"Today's macro: {macro_note or 'n/a'}\nHeadlines (last 24h):\n{listing}",
-            _STOCK_SCHEMA, max_tokens=2048)
-        if data:
-            read = StockRead(score=max(-1, min(1, float(data["score"]))), materiality=data["materiality"],
-                             catalyst_type=data["catalyst_type"], reason=data["reason"][:200],
-                             method="claude", n_headlines=len(items))
+        # Same headlines -> same answer: stored between runs, asked once.
+        key = llm_client.make_key("v3s", symbol, [t for _, t, _ in items[:12]])
+        stored, _ = llm_client.cache_get("v3s", key)
+        if stored:
+            read = StockRead(**stored)
+        else:
+            info = sector_map.lookup(symbol)
+            listing = "\n".join(f"- {t}" + (f" — {s[:300]}" if s else "") for _, t, s in items[:12])
+            data = _llm_json(
+                _STOCK_SYSTEM,
+                f"Stock: {symbol} ({info.get('industry') or 'unknown industry'}, themes {info['themes']})\n"
+                f"Today's macro: {macro_note or 'n/a'}\nHeadlines (last 24h):\n{listing}",
+                _STOCK_SCHEMA, max_tokens=2048, tag=f"V3 stock {symbol}")
+            if data:
+                read = StockRead(score=max(-1, min(1, float(data["score"]))), materiality=data["materiality"],
+                                 catalyst_type=data["catalyst_type"], reason=data["reason"][:200],
+                                 method=config.NEWS_LLM_PROVIDER, n_headlines=len(items))
+                llm_client.cache_put("v3s", key, read.__dict__)
     if read.method == "none" and items:
         lex = news_catalyst._aggregate(symbol, items, now)
         read = StockRead(score=lex.score, materiality="medium" if abs(lex.score) >= 0.5 else "low",

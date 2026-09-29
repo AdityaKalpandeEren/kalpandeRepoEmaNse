@@ -97,6 +97,11 @@ _BULLISH = {
     r"promoters? (buys?|hikes? stake|increases? stake|raises? stake)": 0.5,
     r"\bfii (buying|inflows?)\b|foreign (investors|funds) (buy|return)": 0.4,
     r"rbi (cuts|lowers) (repo|rates?)|repo rate cut": 0.5,
+    # Tariff EXEMPTION is good news - outweighs the generic "tariffs" -0.3 below.
+    r"\bexempt\w*\b.{0,50}\btariffs?\b|\btariffs?\b.{0,50}\bexempt\w*\b": 0.6,
+    # Pharma (USFDA)
+    r"\b(us ?fda|usfda)\b.{0,30}\b(nod|approval|approves|clears?|green ?light)\b|\banda approval\b": 0.5,
+    r"\b(eir|establishment inspection report)\b|\bzero (observations|483)\b|\bvai status\b": 0.4,
 }
 _BEARISH = {
     r"miss(es|ed)? (estimates|expectations|forecasts?|consensus)": -0.8,
@@ -138,6 +143,9 @@ _BEARISH = {
     r"\bfii (selling|outflows?)\b|foreign (investors|funds) (sell|dump|exit|retreat|cut)": -0.4,
     r"rbi (hikes|raises) (repo|rates?)|repo rate hike": -0.5,
     r"rupee (hits|slumps|falls|plunges) .{0,20}(low|record)": -0.3,
+    # Pharma (USFDA)
+    r"\bwarning letter\b|\bimport alert\b|\boai (status|classification)\b": -0.7,
+    r"\bform 483\b|\b\d+ observations\b": -0.4,
 }
 _BULL_RX = [(re.compile(p, re.I), w) for p, w in _BULLISH.items()]
 _BEAR_RX = [(re.compile(p, re.I), w) for p, w in _BEARISH.items()]
@@ -181,10 +189,19 @@ def _company_tokens(ticker: str) -> list:
     if ticker in _names:
         return _names[ticker]
     tokens = [ticker]
+    if ticker in config.INDIA_NEWS_NAMES:     # abbreviated / ambiguous registered names
+        tokens.append(config.INDIA_NEWS_NAMES[ticker][1])
+        _names[ticker] = tokens
+        return tokens
     try:
-        import yfinance as yf
-        info = yf.Ticker(f"{ticker}.NS").get_info() or {}
-        name = info.get("longName") or info.get("shortName") or ""
+        # Registered name from the Upstox instrument master (no network
+        # call); Yahoo only as a fallback for a symbol it doesn't have.
+        from data.instruments import get_company_name
+        name = get_company_name(ticker)
+        if not name:
+            import yfinance as yf
+            info = yf.Ticker(f"{ticker}.NS").get_info() or {}
+            name = info.get("longName") or info.get("shortName") or ""
         core = _NAME_SUFFIX_RX.sub(" ", name).split()
         if core:
             if core[0].upper() in _GROUP_PREFIXES and len(core) >= 2:
@@ -209,6 +226,21 @@ def is_relevant(text: str, ticker: str) -> bool:
                 return True
         elif re.search(rf"\b{re.escape(tok)}".replace("\\ ", r"\s+"), text, re.I):
             return True
+    return False
+
+
+def _is_counterparty(text: str, ticker: str) -> bool:
+    """True when the company is only the OTHER side of the deal in the
+    headline - "Sonu Infratech wins order from Reliance Industries" is an
+    order win for Sonu, not for RELIANCE. The keyword scorer can't tell who
+    won, so such headlines are neutral for the named company."""
+    if ticker.startswith("^"):
+        return False
+    for tok in _company_tokens(ticker):
+        pat = re.escape(tok).replace("\\ ", r"\s+")
+        if re.search(rf"\b(orders?|contracts?|deals?)\b.{{0,60}}\b(from|by|with)\b.{{0,15}}\b{pat}", text, re.I):
+            if not re.search(rf"^\W*{pat}", text, re.I):     # the company isn't the subject
+                return True
     return False
 
 
@@ -256,8 +288,16 @@ def fetch_headlines(ticker: str, lookback_hours: float, now: datetime = None,
     """[(published_utc, title, summary)] newer than lookback_hours and
     relevant: about this company (symbol feeds) or about the market /
     macro backdrop (market feeds)."""
-    import yfinance as yf
     now = now or datetime.now(timezone.utc)
+    if config.INDIA_NEWS_SOURCE == "rss":
+        # Indian RSS feeds + Google News (strategy/india_news.py) - Yahoo's
+        # NSE feeds are stale. ^NSEBANK reads the banking subset.
+        from strategy import india_news
+        if market or ticker.startswith("^"):
+            return india_news.market_headlines(lookback_hours, now, banking=(ticker == "^NSEBANK"))
+        return india_news.stock_headlines(ticker, lookback_hours, now)
+
+    import yfinance as yf
     yf_ticker = ticker if (market or ticker.startswith("^")) else f"{ticker}.NS"
     try:
         raw = yf.Ticker(yf_ticker).news or []
@@ -320,44 +360,37 @@ _LLM_SYSTEM = (
 
 
 def _llm_scores(ticker: str, titles: list):
-    """Per-headline scores from Claude, or None on any failure."""
-    global _llm_client
-    try:
-        import anthropic
-    except ImportError:
+    """Per-headline scores from the configured LLM (strategy/llm_client.py -
+    Gemini by default), or None on any failure (-> lexicon)."""
+    from strategy import llm_client
+    subject = "the Indian stock market overall (NIFTY)" if ticker.startswith("^") else f"{ticker} (NSE)"
+    listing = "\n".join(f"{i}. {t}" for i, t in enumerate(titles))
+    data = llm_client.json_call(_LLM_SYSTEM, f"Stock: {subject}\nHeadlines:\n{listing}", _LLM_SCHEMA,
+                                tag=f"V2 news {ticker}", max_tokens=2048)
+    if not data:
         return None
-    try:
-        if _llm_client is None:
-            _llm_client = anthropic.Anthropic(timeout=20.0, max_retries=1)
-        listing = "\n".join(f"{i}. {t}" for i, t in enumerate(titles))
-        response = _llm_client.beta.messages.create(
-            model=config.ML_V2_NEWS_LLM_MODEL,
-            max_tokens=2048,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": _LLM_SCHEMA},
-            },
-            system=_LLM_SYSTEM,
-            messages=[{"role": "user", "content": f"Ticker: {ticker}\nHeadlines:\n{listing}"}],
-        )
-        if response.stop_reason == "refusal":
-            return None
-        text = next((b.text for b in response.content if b.type == "text"), None)
-        if not text:
-            return None
-        data = json.loads(text)
-        scores = [0.0] * len(titles)
-        for s in data.get("scores", []):
-            i = int(s.get("index", -1))
-            if 0 <= i < len(titles):
-                scores[i] = max(-1.0, min(1.0, float(s.get("score", 0.0))))
-        return scores
-    except Exception as e:
-        print(f"[news] LLM scoring failed for {ticker}, using lexicon: {e!r}")
-        return None
+    scores = [0.0] * len(titles)
+    for s in data.get("scores", []):
+        i = int(s.get("index", -1))
+        if 0 <= i < len(titles):
+            scores[i] = max(-1.0, min(1.0, float(s.get("score", 0.0))))
+    return scores
+
+
+def _cached_llm_scores(ticker: str, texts: list) -> list:
+    """LLM score per headline, or None where there is none. Each headline is
+    sent once; later runs reuse the stored score (llm_client cache)."""
+    from strategy import llm_client
+    keys = [llm_client.make_key("v2", ticker, t) for t in texts]
+    out = [llm_client.cache_get("v2", k)[0] for k in keys]
+    todo = [i for i, s in enumerate(out) if s is None]
+    if todo:
+        fresh = _llm_scores(ticker, [texts[i] for i in todo])
+        if fresh is not None:
+            for i, s in zip(todo, fresh):
+                out[i] = s
+                llm_client.cache_put("v2", keys[i], s)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -370,14 +403,16 @@ def _aggregate(ticker: str, items: list, now: datetime) -> CatalystRead:
     if not items:
         return CatalystRead(method="none")
     titles = [f"{t}. {s}" if s else t for _, t, s in items]
-    scores = None
-    method = "lexicon"
+    lexicon = [0.0 if _is_counterparty(t, ticker) else score_headline(t) for _, t, _ in items]
+    scores, method = lexicon, "lexicon"
     if config.ML_V2_NEWS_LLM_ENABLED:
-        scores = _llm_scores(ticker, titles)
-        if scores is not None:
-            method = "llm"
-    if scores is None:
-        scores = [score_headline(t) for _, t, _ in items]
+        llm = _cached_llm_scores(ticker, titles)
+        n_llm = sum(s is not None for s in llm)
+        if n_llm:
+            # LLM score where one exists, lexicon for any headline the LLM
+            # couldn't score this run (quota) - same veto/boost rules either way.
+            scores = [s if s is not None else x for s, x in zip(llm, lexicon)]
+            method = "llm" if n_llm == len(llm) else "llm+lexicon"
 
     # Recency weighting: a 1-hour-old headline counts ~2x a 6-hour-old one.
     num = den = 0.0

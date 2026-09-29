@@ -61,12 +61,18 @@ _THEME_RULES = [
     ("specialty retail", "RETAIL"), ("department stores", "RETAIL"), ("fertilizers", "FERTILISER"),
     ("agricultural inputs", "FERTILISER"), ("textile", "TEXTILES"), ("electrical equipment", "CAPITAL_GOODS"),
     ("specialty industrial machinery", "CAPITAL_GOODS"), ("travel", "TRAVEL"), ("lodging", "HOTELS"),
+    ("diagnostics", "HEALTHCARE"), ("confectioners", "SUGAR"),
 ]
 # Names Yahoo classifies too broadly for the themes that matter to news.
 _THEME_OVERRIDES = {
     "ASIANPAINT": ["PAINTS"], "BERGEPAINT": ["PAINTS"], "INDIGO": ["AVIATION"],
     "POLICYBZR": ["INSURANCE", "INTERNET"], "ETERNAL": ["INTERNET"], "NYKAA": ["INTERNET", "RETAIL"],
     "PAYTM": ["INTERNET", "NBFC"], "IRCTC": ["RAILWAYS", "TRAVEL"], "HAL": ["DEFENCE"], "BEL": ["DEFENCE"],
+    # Sugar mills (sugar + ethanol): Yahoo files them under assorted food /
+    # industrial buckets, so they're tagged explicitly.
+    **{s: ["SUGAR"] for s in ("BALRAMCHIN", "EIDPARRY", "TRIVENI", "DWARKESH", "BAJAJHIND", "RENUKA",
+                              "DALMIASUG", "AVADHSUGAR", "MAGADSUGAR", "DHAMPURSUG", "UTTAMSUGAR",
+                              "KCPSUGIND", "BANARISUG")},
 }
 
 _lock = threading.Lock()
