@@ -38,8 +38,13 @@ RETEST_TOUCH_BUFFER_PCT = 0.001  # 0.1% buffer - counts as "touching" VWAP even 
 BREAKOUT_MAX_PCT_FROM_HIGH = 0.005   # within 0.5% of today's high counts as "near breakout"
 BREAKOUT_MIN_PCT_FROM_OPEN = 0.0     # must be a green day (close >= open) to qualify
 
+# --- Production alerts (scan_once.py EMA-cross + broad VWAP test) ---
+# Paused for now so only the research strategies (LIVE_RESEARCH_*) alert.
+# Set PRODUCTION_ALERTS_ENABLED=true (env / GitHub repo variable) to resume.
+PRODUCTION_ALERTS_ENABLED = os.getenv("PRODUCTION_ALERTS_ENABLED", "false").lower() == "true"
+
 # --- Runtime ---
-POLL_SECONDS = 60                # how often the loop checks for new candles
+POLL_SECONDS = 60               # how often the loop checks for new candles
 SKIP_FIRST_MINUTES = 15          # ignore signals in first 15 min after market open
 
 # --- Paper trading (main.py only - see paper_trading/tracker.py) ---
@@ -258,7 +263,7 @@ ML_V2_EXCLUDE_FEATURES = [
 LIVE_RESEARCH_ENABLED = os.getenv("LIVE_RESEARCH_ENABLED", "true").lower() == "true"
 LIVE_RESEARCH_STRATEGIES = [s.strip() for s in os.getenv(
     "LIVE_RESEARCH_STRATEGIES",
-    "K_RSI2_REVERSION,SCORE_ENGINE,L_ML_META,L_ML_META_V2,J_VWAP_BAND_REVERSION",
+    "K_RSI2_REVERSION,SCORE_ENGINE,L_ML_META,L_ML_META_V2,L_ML_META_V3,J_VWAP_BAND_REVERSION",
 ).split(",") if s.strip()]
 LIVE_RESEARCH_DIRECTIONS = [d.strip() for d in os.getenv(
     "LIVE_RESEARCH_DIRECTIONS", "long").split(",") if d.strip()]
