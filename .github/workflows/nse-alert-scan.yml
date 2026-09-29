@@ -59,8 +59,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Optional: a separate chat for research/paper alerts + EOD report.
           LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
-          # Optional: enables V3's Claude catalyst reader (rules otherwise).
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Gemini (free tier) reads the news for V2 and V3; without it they
+          # fall back to the keyword lexicon / sector rules.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Production EMA-cross / VWAP alerts: paused by default. Set the
+          # repo variable PRODUCTION_ALERTS_ENABLED=true to resume them.
+          PRODUCTION_ALERTS_ENABLED: ${{ vars.PRODUCTION_ALERTS_ENABLED || 'false' }}
 
       - name: Save paper-trading state
         if: always()

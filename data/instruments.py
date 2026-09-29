@@ -36,6 +36,18 @@ def _load_cache():
             # Only keep NSE cash-market equities
             if row.get("instrument_type") == "EQUITY":
                 _cache[row["tradingsymbol"]] = row["instrument_key"]
+                _names[row["tradingsymbol"]] = row.get("name") or ""
+
+
+_names = {}
+
+
+def get_company_name(trading_symbol: str) -> str:
+    """Registered company name, e.g. RELIANCE -> 'RELIANCE INDUSTRIES LTD'
+    ('' if unknown). Used to find the company in news headlines."""
+    if not _cache:
+        _load_cache()
+    return _names.get(trading_symbol, "")
 
 
 def get_instrument_key(trading_symbol: str) -> str:

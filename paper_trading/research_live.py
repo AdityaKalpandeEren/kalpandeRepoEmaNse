@@ -430,26 +430,92 @@ def _fmt_time(ts: str) -> str:
         return str(ts)[11:16]
 
 
+# What each strategy is, in plain words, for the alert text.
+_STRATEGY_INFO = {
+    "K_RSI2_REVERSION": "RSI(2) dip-buy - sharp dip inside an uptrend",
+    "J_VWAP_BAND_REVERSION": "VWAP band bounce - stretched far below VWAP, turning up",
+    "SCORE_ENGINE": "Setup score - trend, momentum, volume, VWAP, volatility, price action",
+    "L_ML_META": "ML filter V1 - model picked the best of 12 setups",
+    "L_ML_META_V2": "ML filter V2 - best setup + market context + news check",
+    "L_ML_META_V3": "ML filter V3 - best setup + sectors, macro and catalysts",
+}
+_SETUP_NAMES = {
+    "A_BREAKOUT": "breakout", "B_BREAKOUT_CLOSE": "breakout close", "C_BREAKOUT_RETEST": "breakout retest",
+    "D_VWAP_RECLAIM": "VWAP reclaim", "E_VWAP_REJECTION": "VWAP rejection", "F_EMA_PULLBACK": "EMA pullback",
+    "G_CONFLUENCE": "EMA+VWAP confluence", "H_ORB_VWAP": "opening-range breakout",
+    "I_EMA_STACK_BREAKOUT": "EMA stack breakout", "J_VWAP_BAND_REVERSION": "VWAP band bounce",
+    "K_RSI2_REVERSION": "RSI(2) dip-buy", "SCORE_ENGINE": "setup score", "RS_BREAKOUT": "relative-strength breakout",
+}
+_OUTCOME_TITLES = {
+    "TARGET": "🎯 TARGET HIT", "STOP": "🛑 STOP HIT", "EOD_SQUAREOFF": "⏰ 15:15 SQUARE-OFF",
+    "SESSION_CLOSE": "⏰ 15:15 SQUARE-OFF", "SHOCK_EXIT": "⚡ MARKET-SHOCK EXIT",
+}
+
+
+def _rs(x) -> str:
+    return f"₹{float(x):,.2f}"
+
+
+def _why(t: dict) -> str:
+    """The signal's reason string, rewritten for a human."""
+    import re
+    reason, strat = t.get("reason") or "", t["strategy"]
+    if strat == "SCORE_ENGINE":
+        comps = dict(re.findall(r"(\w+)=([-\d.]+)", reason))
+        parts = " · ".join(f"{k} {float(v):.2f}" for k, v in comps.items())
+        return f"Score {t.get('score', 0):.0f}/100 (needs 55) - {parts}"
+    m = re.match(r"meta(?:-v\d)?[^:]*: (\w+) p=([\d.]+)(?: \(bar ([\d.]+)\))?(?: \| (.*))?", reason)
+    if m:
+        setup, p, bar, extra = m.groups()
+        text = (f"Setup: {_SETUP_NAMES.get(setup, setup)} · win probability {float(p)*100:.0f}%"
+                f" (needs {float(bar or config.ML_META_MIN_PROB)*100:.0f}%)")
+        return text + (f"\n  News/catalyst: {extra}" if extra else "")
+    if strat == "K_RSI2_REVERSION":
+        return reason.replace(f"RSI{config.RSI2_PERIOD}=", "RSI(2) ").replace(" oversold above EMA", " oversold, above EMA ") \
+            + ", green candle"
+    if strat == "J_VWAP_BAND_REVERSION":
+        return reason.replace("vwap_z", "VWAP z-score")
+    return reason[:200]
+
+
 def _format_entries(trades: list) -> str:
-    lines = [f"📈 NSE PAPER SIGNALS ({len(trades)}) - research strategies, next-candle fill"]
+    blocks = [f"📈 NSE PAPER SIGNALS ({len(trades)}) · paper trades, not real orders"]
     for t in trades:
-        risk = t["signal_price"] - t["stop_loss"] if t["direction"] == "long" else t["stop_loss"] - t["signal_price"]
-        risk_pct = risk / t["signal_price"] * 100 if t["signal_price"] else 0
-        lines.append(
-            f"\n{t['symbol']} {t['direction'].upper()} | {t['strategy']} | candle {_fmt_time(t['signal_time'])} IST\n"
-            f"  ~Rs {t['signal_price']}  stop {t['stop_loss']} ({risk_pct:.2f}%)  target {t['target']}\n"
-            f"  {t['regime']} | {t['reason'][:160]}")
-    return "\n".join(lines)
+        entry = float(t["signal_price"])
+        long = t["direction"] == "long"
+        stop_pct = (t["stop_loss"] / entry - 1) * 100 if entry else 0
+        tgt_pct = (t["target"] / entry - 1) * 100 if entry else 0
+        risk = abs(entry - t["stop_loss"])
+        rr = abs(t["target"] - entry) / risk if risk else 0
+        exits = ("stop · target · market-shock exit · 15:15 square-off" if t.get("exit_mode") == "v2"
+                 else "stop · target · 15:15 square-off")
+        blocks.append(
+            f"\n{'🟢 BUY' if long else '🔴 SELL'} {t['symbol']}\n"
+            f"📌 {t['strategy']}\n"
+            f"   {_STRATEGY_INFO.get(t['strategy'], '')}\n"
+            f"🕒 Signal candle {_fmt_time(t['signal_time'])} IST → fill at next candle open\n"
+            f"💰 Entry  ~{_rs(entry)}\n"
+            f"🛑 Stop    {_rs(t['stop_loss'])} ({stop_pct:+.2f}%)\n"
+            f"🎯 Target  {_rs(t['target'])} ({tgt_pct:+.2f}%) · {rr:.1f}R\n"
+            f"📊 Why: {_why(t)}\n"
+            f"🧭 Market: {t['regime'].replace('_', ' ')}\n"
+            f"⏹ Exit: {exits}")
+    return "\n".join(blocks)
 
 
 def _format_exits(trades: list) -> str:
-    lines = [f"🔔 NSE PAPER EXITS ({len(trades)})"]
+    blocks = [f"🔔 NSE PAPER EXITS ({len(trades)})"]
     for t in trades:
-        mark = "✅" if t["r_multiple"] > 0 else "❌"
-        lines.append(f"{mark} {t['symbol']} {t['strategy']} {t['outcome']} "
-                     f"{t['entry']} -> {t['exit_price']}  {t['r_multiple']:+.2f}R "
-                     f"({_fmt_time(t['entry_time'])}-{_fmt_time(t['exit_time'])})")
-    return "\n".join(lines)
+        move = (t["exit_price"] / t["entry"] - 1) * 100 if t.get("entry") else 0
+        mins = int(t.get("candles_held", 0)) * config.CANDLE_INTERVAL_MINUTES
+        result = "✅ WIN" if t["r_multiple"] > 0 else "❌ LOSS"
+        blocks.append(
+            f"\n{_OUTCOME_TITLES.get(t['outcome'], t['outcome'])} · {t['symbol']}\n"
+            f"📌 {t['strategy']}\n"
+            f"🕒 {_fmt_time(t['entry_time'])} → {_fmt_time(t['exit_time'])} IST ({mins} min)\n"
+            f"💰 {_rs(t['entry'])} → {_rs(t['exit_price'])} ({move:+.2f}%)\n"
+            f"{result}: {t['r_multiple']:+.2f}R after costs ({t.get('pnl_pct', 0):+.2f}%)")
+    return "\n".join(blocks)
 
 
 # ═══════════════════════════════════════════════════════════════════
