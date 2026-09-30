@@ -6,6 +6,7 @@ production / research alerts.
     python live_v33.py --loop          # keep running (every 60 s) until the day is done
     python live_v33.py --report        # print the all-time paper summary
     python live_v33.py --no-telegram   # console only
+    python live_v33.py --warm          # fill the data caches (no pick, no state change)
 
 Daily cycle (IST):
   from 9:45   PICK: score every stock (watchlist + universe + NIFTY 50) with
@@ -269,17 +270,35 @@ def run_once(telegram=True) -> bool:
     return False
 
 
+def warm():
+    """Run the 9:45 feature build once without picking, so every history /
+    NSE-archive cache the pick needs is on disk. On GitHub Actions this
+    seeds the cached backtest/cache before the first live 9:45 pick,
+    which would otherwise spend its first minutes downloading years of
+    daily candles."""
+    from strategy import v33_live
+    now = datetime.now(IST)
+    syms = universe()
+    t0 = time.time()
+    rows = v33_live.build_rows(now.date(), syms, today_5m, verbose=False)
+    print(f"[V3.3] warm: {len(rows)}/{len(syms)} symbols built in {time.time() - t0:.0f} s")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--loop", action="store_true", help="run every 60 s until today's cycle is done")
     ap.add_argument("--report", action="store_true", help="print the all-time paper summary")
     ap.add_argument("--no-telegram", action="store_true")
+    ap.add_argument("--warm", action="store_true", help="fill the data caches only (no pick, no state change)")
     args = ap.parse_args()
     if args.report:
         print(summary_text())
         return
     if not config.UPSTOX_ACCESS_TOKEN:
         raise SystemExit("UPSTOX_ACCESS_TOKEN not set")
+    if args.warm:
+        warm()
+        return
     tg = not args.no_telegram
     while True:
         try:
