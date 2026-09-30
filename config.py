@@ -291,6 +291,14 @@ INDIA_NEWS_NAMES = {
     "WELCORP": ("Welspun Corp", "Welspun Corp"), "SOLARA": ("Solara Active Pharma", "Solara"),
     "ARTEMISMED": ("Artemis Hospitals", "Artemis"), "QUADFUTURE": ("Quadrant Future Tek", "Quadrant Future"),
     "SMSPHARMA": ("SMS Pharmaceuticals", "SMS Pharma"), "CUPID": ("Cupid Ltd", "Cupid"),
+    # Healthcare momentum additions (2026-09-30)
+    "STAR": ("Strides Pharma", "Strides"), "IOLCP": ("IOL Chemicals", "IOL Chemicals"),
+    "INDGN": ("Indegene", "Indegene"), "JUBLPHARMA": ("Jubilant Pharmova", "Jubilant Pharmova"),
+    "SAILIFE": ("Sai Life Sciences", "Sai Life"), "WOCKPHARMA": ("Wockhardt", "Wockhardt"),
+    "CAPLIPOINT": ("Caplin Point", "Caplin"), "AKUMS": ("Akums Drugs", "Akums"),
+    "MOREPENLAB": ("Morepen Laboratories", "Morepen"), "YATHARTH": ("Yatharth Hospital", "Yatharth"),
+    "SHILPAMED": ("Shilpa Medicare", "Shilpa Medicare"), "MARKSANS": ("Marksans Pharma", "Marksans"),
+    "EMCURE": ("Emcure Pharmaceuticals", "Emcure"), "LENSKART": ("Lenskart", "Lenskart"),
 }
 
 # --- LLM for the news / catalyst readers (V2 and V3) ---
