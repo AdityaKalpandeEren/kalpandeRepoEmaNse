@@ -282,6 +282,15 @@ INDIA_NEWS_NAMES = {
     "ONGC": ("ONGC", "Oil and Natural Gas"), "MOTHERSON": ("Samvardhana Motherson", "Motherson"),
     "CGPOWER": ("CG Power", "CG Power"), "LTF": ("L&T Finance", "L&T Finance"),
     "LT": ("Larsen & Toubro", "Larsen"), "TMPV": ("Tata Motors", "Tata Motors"),
+    # Hot / near-breakout additions (2026-09-30) with generic first words
+    "SSWL": ("Steel Strips Wheels", "Steel Strips"), "ENGINERSIN": ("Engineers India", "Engineers India"),
+    "MAHSEAMLES": ("Maharashtra Seamless", "Maharashtra Seamless"),
+    "AARTIPHARM": ("Aarti Pharmalabs", "Aarti Pharmalabs"), "FINCABLES": ("Finolex Cables", "Finolex Cables"),
+    "RML": ("Rane Madras", "Rane"), "ABDL": ("Allied Blenders", "Allied Blenders"),
+    "GCSL": ("Gretex Corporate", "Gretex"), "NRBBEARING": ("NRB Bearings", "NRB Bearing"),
+    "WELCORP": ("Welspun Corp", "Welspun Corp"), "SOLARA": ("Solara Active Pharma", "Solara"),
+    "ARTEMISMED": ("Artemis Hospitals", "Artemis"), "QUADFUTURE": ("Quadrant Future Tek", "Quadrant Future"),
+    "SMSPHARMA": ("SMS Pharmaceuticals", "SMS Pharma"), "CUPID": ("Cupid Ltd", "Cupid"),
 }
 
 # --- LLM for the news / catalyst readers (V2 and V3) ---
