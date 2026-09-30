@@ -1,0 +1,84 @@
+name: NSE V3.3 Paper
+
+# L_ML_V33 paper trading (live_v33.py), separate from the 2-minute
+# nse-alert-scan: one long job per trading day that picks the top-K stocks
+# at 9:45 IST, checks their 2% stops every minute, and closes them at the
+# 15:15 square-off with exact NSE charges. Telegram: picks, stops, day P&L.
+#
+# Two start times: GitHub can delay or drop a scheduled run, so 9:38 is a
+# backup. Every step of live_v33.py is idempotent - the backup waits for
+# the first run (concurrency below) and then finds the day already done.
+on:
+  schedule:
+    - cron: "30 9 * * 1-5"
+      timezone: "Asia/Kolkata"
+    - cron: "38 9 * * 1-5"
+      timezone: "Asia/Kolkata"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "loop = full trading day; warm = fill the data caches only (no pick)"
+        type: choice
+        options: [loop, warm]
+        default: loop
+
+concurrency:
+  group: nse-v33-paper
+  cancel-in-progress: false
+
+jobs:
+  v33:
+    runs-on: ubuntu-latest
+    # 9:30 start -> 15:15 close is ~5h50m; GitHub's hard limit is 6 h.
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # V3.3 state (live_state/v33) + its ~750 MB history / NSE-archive
+      # cache. Own key prefix, so it never mixes with nse-alert-scan's state.
+      - name: Restore V3.3 state + data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v33
+            backtest/cache
+          key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nse-v33-
+
+      - name: Run V3.3
+        # Leaves time for the cache save below if the day runs long.
+        timeout-minutes: 350
+        run: python live_v33.py ${{ github.event.inputs.mode == 'warm' && '--warm' || '--loop' }}
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+
+      - name: Save V3.3 state + data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            live_state/v33
+            backtest/cache
+          key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload V3.3 trades
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-v33-${{ github.run_id }}
+          path: live_state/v33
+          if-no-files-found: ignore
+          retention-days: 30
