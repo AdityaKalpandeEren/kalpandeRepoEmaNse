@@ -1,37 +1,23 @@
-name: NSE V3.3 Paper
+name: NSE V3.3 Warm Cache
 
-# L_ML_V33 paper trading (live_v33.py), separate from the 2-minute
-# nse-alert-scan: one long job per trading day that picks the top-K stocks
-# at 9:45 IST, checks their 2% stops every minute, and closes them at the
-# 15:15 square-off with exact NSE charges. Telegram: picks, stops, day P&L.
-#
-# Two start times: GitHub can delay or drop a scheduled run, so 9:38 is a
-# backup. Every step of live_v33.py is idempotent - the backup waits for
-# the first run (concurrency below) and then finds the day already done.
+# V3.3 paper trading itself runs inside "NSE Alert Scan" (job `v33`), on the
+# same cron-job.org trigger as the scan. This workflow is manual only: it
+# fills V3.3's data caches (years of daily candles, NSE archives, Yahoo
+# earnings dates) so the 9:45 pick doesn't have to download them - run it
+# once after adding many stocks to the watchlist/universe, or if the
+# nse-v33- cache was evicted. It shares the `nse-v33` concurrency group, so
+# it never overlaps a live V3.3 step.
 on:
-  schedule:
-    - cron: "30 9 * * 1-5"
-      timezone: "Asia/Kolkata"
-    - cron: "38 9 * * 1-5"
-      timezone: "Asia/Kolkata"
-
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "loop = full trading day; warm = fill the data caches only (no pick)"
-        type: choice
-        options: [loop, warm]
-        default: loop
 
 concurrency:
-  group: nse-v33-paper
+  group: nse-v33
   cancel-in-progress: false
 
 jobs:
-  v33:
+  warm:
     runs-on: ubuntu-latest
-    # 9:30 start -> 15:15 close is ~5h50m; GitHub's hard limit is 6 h.
-    timeout-minutes: 360
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -43,27 +29,22 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # V3.3 state (live_state/v33) + its ~750 MB history / NSE-archive
-      # cache. Own key prefix, so it never mixes with nse-alert-scan's state.
       - name: Restore V3.3 state + data cache
         uses: actions/cache/restore@v4
         with:
           path: |
             live_state/v33
             backtest/cache
+            backtest/ml/cache
           key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             nse-v33-
 
-      - name: Run V3.3
-        # Leaves time for the cache save below if the day runs long.
-        timeout-minutes: 350
-        run: python live_v33.py ${{ github.event.inputs.mode == 'warm' && '--warm' || '--loop' }}
+      - name: Warm V3.3 caches
+        timeout-minutes: 110
+        run: python live_v33.py --warm
         env:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
 
       - name: Save V3.3 state + data cache
         if: always()
@@ -72,13 +53,5 @@ jobs:
           path: |
             live_state/v33
             backtest/cache
+            backtest/ml/cache
           key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Upload V3.3 trades
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nse-v33-${{ github.run_id }}
-          path: live_state/v33
-          if-no-files-found: ignore
-          retention-days: 30

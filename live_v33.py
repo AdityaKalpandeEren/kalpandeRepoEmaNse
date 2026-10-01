@@ -131,15 +131,25 @@ def do_pick(st, now, telegram):
     bundle = joblib.load(config.ML_V33_MODEL_PATH)
     k = config.V33_TOP_K or int(bundle.get("k", 5))
     print(f"[V3.3] scoring the universe ({now:%H:%M} IST) ...", flush=True)
+    t0 = time.time()
     # Raw candles (incl. the forming 9:45 one): the opening features use only
     # the six closed 9:15-9:40 candles; the 9:45 candle supplies the fill
     # price, exactly as in training.
-    rows = v33_live.build_rows(now.date(), universe(), today_5m, verbose=False)
+    syms = universe()
+    rows = v33_live.build_rows(now.date(), syms, today_5m, verbose=False)
+    print(f"[V3.3] features for {len(rows)}/{len(syms)} symbols in {time.time() - t0:.0f} s "
+          f"(phases: {v33_live.LAST_TIMINGS})", flush=True)
     if rows.empty:
         print("[V3.3] no rows yet (opening candles missing?) - will retry next run")
         return
     ranked = v33_live.score(rows, bundle)
     done_at = datetime.now(IST)
+    if done_at.hour * 60 + done_at.minute >= 14 * 60 + 30:
+        # A pick this late would be entered and squared off minutes apart.
+        st.update({"date": str(now.date()), "closed": True, "skipped": "pick finished after 14:30"})
+        save_state(st)
+        notify(f"V3.3 PAPER {now.date()}: pick finished too late ({done_at:%H:%M} IST) - no trades today.", telegram)
+        return
     late = done_at.hour * 60 + done_at.minute >= 9 * 60 + 55
     top = ranked.head(k)
     if not late and top["entry"].isna().any():
@@ -233,13 +243,19 @@ def summary_text() -> str:
     if not os.path.exists(path):
         return "No closed V3.3 paper trades yet."
     t = pd.read_csv(path)
+    late = t["late_fill"].astype(str).str.lower().eq("true") if "late_fill" in t else pd.Series(False, index=t.index)
+    n_late = int(late.sum())
+    t = t[~late]
+    if t.empty:
+        return f"No on-time V3.3 paper trades yet ({n_late} late-fill test trades excluded)."
     day = t.groupby("date").agg(net=("net", "sum"), pct=("net_pct", "mean"))
     tt = (day["pct"].mean() / (day["pct"].std(ddof=1) / math.sqrt(len(day)))) if len(day) > 2 else float("nan")
     return (f"ALL-TIME ({len(day)} days, {len(t)} trades): net Rs {t['net'].sum():+,.0f} | "
             f"win {100*(t['net'] > 0).mean():.0f}% of trades, {100*(day['net'] > 0).mean():.0f}% of days | "
             f"avg {day['pct'].mean()*100:+.3f}%/day | charges Rs {t['charges'].sum():,.0f} | t {tt:.2f}"
             + (f" | avg entry drift at alert {t['alert_drift_pct'].mean():+.3f}%" if "alert_drift_pct" in t else "")
-            + ("  (need ~60+ days before judging)" if len(day) < 60 else ""))
+            + ("  (need ~60+ days before judging)" if len(day) < 60 else "")
+            + (f" | {n_late} late-fill test trades excluded" if n_late else ""))
 
 
 def run_once(telegram=True) -> bool:
@@ -300,6 +316,7 @@ def main():
         warm()
         return
     tg = not args.no_telegram
+    before = _state_bytes()
     while True:
         try:
             done = run_once(tg)
@@ -309,6 +326,19 @@ def main():
         if done or not args.loop:
             break
         time.sleep(60)
+    changed = _state_bytes() != before
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:                       # lets the workflow save its cache only when something happened
+        with open(out, "a") as f:
+            f.write(f"changed={'true' if changed else 'false'}\n")
+
+
+def _state_bytes() -> bytes:
+    try:
+        with open(_path("state.json"), "rb") as f:
+            return f.read()
+    except OSError:
+        return b""
 
 
 if __name__ == "__main__":
