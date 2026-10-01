@@ -157,15 +157,19 @@ def do_pick(st, now, telegram):
         return
     picks = []
     for rank, (_, r) in enumerate(top.iterrows(), 1):
-        df = closed(today_5m(r["symbol"]), done_at)
-        entry = float(r["entry"]) if not late else float(df["close"].iat[-1])
-        qty = int(config.V33_NOTIONAL_PER_STOCK // entry)
         # What you could realistically buy at when the alert arrives - the
-        # latest traded price, incl. the forming candle. The paper fill stays
-        # the 9:45 open (what the model was trained on); the gap between the
-        # two is the real-world entry drift to watch.
+        # latest traded price, incl. the forming candle (fetched fresh, not
+        # from the scoring pass). On time, the paper fill stays the 9:45 open
+        # (what the model was trained on) and the gap is the entry drift to
+        # watch. A LATE pick fills at this same live price - never at a
+        # just-closed candle that Upstox may still be revising.
+        _c5.pop(r["symbol"], None)
         raw = today_5m(r["symbol"])
-        at_alert = float(raw["close"].iat[-1]) if len(raw) else entry
+        if late and raw.empty:
+            continue
+        at_alert = float(raw["close"].iat[-1]) if len(raw) else float(r["entry"])
+        entry = float(r["entry"]) if not late else at_alert
+        qty = int(config.V33_NOTIONAL_PER_STOCK // entry)
         picks.append({"rank": rank, "symbol": r["symbol"], "score": round(float(r["score"]), 5), "qty": qty,
                       "entry": round(entry, 2), "price_at_alert": round(at_alert, 2),
                       "alert_drift_pct": round((at_alert / entry - 1) * 100, 3),
@@ -228,7 +232,9 @@ def do_close(st, now, telegram):
     st["closed"] = True
     save_state(st)
     day_net = sum(p["net"] for p in st["picks"])
-    lines = [f"📊 V3.3 PAPER RESULT {st['date']}"]
+    late_day = any(p.get("late_fill") for p in st["picks"])
+    lines = [f"📊 V3.3 PAPER RESULT {st['date']}"
+             + (" - LATE-FILL TEST DAY (not the 9:45 entry; excluded from all-time stats)" if late_day else "")]
     for p in st["picks"]:
         mark = "✅" if p["net"] > 0 else "❌"
         lines.append(f"{mark} {p['symbol']}: {p['entry']} -> {p['exit']} ({p['outcome']})  "
