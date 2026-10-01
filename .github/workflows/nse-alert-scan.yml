@@ -176,3 +176,117 @@ jobs:
           path: live_state/v33
           if-no-files-found: ignore
           retention-days: 30
+
+  # V5.0 swing model (v5/live.py): once per trading day, on the first
+  # trigger after 09:20 IST - downloads the previous session's NSE files,
+  # scores ~100 large caps from that close, and every 5th session rebalances
+  # the paper portfolio (top 20) at today's open. Telegram: rebalance orders
+  # or a daily portfolio update. Later triggers the same day exit at once.
+  v5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: nse-v5
+      cancel-in-progress: false
+
+    steps:
+      - name: Trading window check (Mon-Fri 9:20-15:30 IST)
+        id: win
+        run: |
+          hhmm=$(TZ=Asia/Kolkata date +%H%M); dow=$(TZ=Asia/Kolkata date +%u)
+          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0920 ] && [ "$hhmm" -le 1530 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "outside the V5 window ($hhmm IST) - nothing to do"
+          fi
+
+      # The day's work is done after the first successful run: a tiny marker
+      # cache (one key per IST date) lets later triggers skip the heavy setup.
+      - name: Already done today?
+        id: done
+        if: steps.win.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .v5_done
+          key: nse-v5-done-${{ github.run_id }}
+          restore-keys: |
+            nse-v5-done-
+
+      - name: Check marker date
+        id: today
+        if: steps.win.outputs.run == 'true'
+        run: |
+          d=$(TZ=Asia/Kolkata date +%F)
+          if [ -f .v5_done ] && [ "$(cat .v5_done)" = "$d" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "V5 already ran today ($d)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        run: pip install -r requirements.txt -r v5/requirements-live.txt
+
+      - name: Restore V5 state + NSE data cache
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v5
+            swing/cache
+          key: nse-v5-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nse-v5-
+
+      - name: Run V5 step
+        id: v5
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        timeout-minutes: 40
+        run: python -m v5.live
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+
+      - name: Save V5 state + NSE data cache
+        if: always() && steps.win.outputs.run == 'true' && steps.v5.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            live_state/v5
+            swing/cache
+          key: nse-v5-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Mark today done
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true' && steps.v5.outcome == 'success' && hashFiles('live_state/v5/state.json') != ''
+        run: |
+          d=$(TZ=Asia/Kolkata date +%F)
+          if python -c "import json,sys; sys.exit(0 if json.load(open('live_state/v5/state.json')).get('last_day')=='$d' else 1)"; then
+            echo "$d" > .v5_done; echo "marked $d"
+          fi
+
+      - name: Save done marker
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true' && hashFiles('.v5_done') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .v5_done
+          key: nse-v5-done-${{ github.run_id }}
+
+      - name: Upload V5 trades
+        if: always() && steps.win.outputs.run == 'true' && steps.v5.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-v5-${{ github.run_id }}
+          path: live_state/v5
+          if-no-files-found: ignore
+          retention-days: 30
+

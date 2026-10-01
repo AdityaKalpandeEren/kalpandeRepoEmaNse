@@ -19,3 +19,8 @@ backtest/ml/data/dataset_v33.csv
 backtest/results/
 paper_trades.db
 *.swp
+
+# V5 swing model: data cache + research outputs - never commit
+swing/cache/
+swing/results/
+live_state/
