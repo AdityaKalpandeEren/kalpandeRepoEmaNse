@@ -19,3 +19,7 @@ backtest/ml/data/dataset_v33.csv
 backtest/results/
 paper_trades.db
 *.swp
+
+# V4.0 research caches / outputs - never commit
+v4/cache/
+v4/results/
