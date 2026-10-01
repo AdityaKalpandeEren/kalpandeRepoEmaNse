@@ -195,3 +195,9 @@ HUBTOWN
 
 # Added 2026-10-01 - requested
 JSWINFRA
+
+# Added 2026-10-01 - requested (CHOLAFIN removed from universe.txt: its symbol
+# lookup resolves to a debenture, so it could not be priced)
+SHRIRAMFIN
+MANINFRA
+MOSCHIP
