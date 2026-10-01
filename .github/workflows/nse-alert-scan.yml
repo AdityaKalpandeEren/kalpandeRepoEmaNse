@@ -16,18 +16,20 @@ on:
 
   workflow_dispatch:
 
-# One scan at a time: the research paper-trading state (live_state/) is
-# read at the start of a run and written at the end, so overlapping runs
-# would lose each other's trades. A trigger that arrives mid-run waits; the
-# next run catches up on every candle closed since the last one.
-concurrency:
-  group: nse-alert-scan
-  cancel-in-progress: false
+# Concurrency is per JOB (not per workflow run), so the V3.3 job's slow
+# 9:45 pick never holds up the 2-minute scans.
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # One scan at a time: the research paper-trading state (live_state/) is
+    # read at the start of a run and written at the end, so overlapping runs
+    # would lose each other's trades. A trigger that arrives mid-run waits;
+    # the next run catches up on every candle closed since the last one.
+    concurrency:
+      group: nse-alert-scan
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -90,5 +92,87 @@ jobs:
           path: |
             live_state/reports
             live_state/paper_trades_all.csv
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # V3.3 daily ranker (live_v33.py), on the same trigger as the scan. Each
+  # run does one step of the day and exits: before 9:45 nothing; first run
+  # after 9:45 scores ~260 stocks and sends the top-5 picks (a few minutes);
+  # then 2% stop checks; first run after 15:15 squares off + day report.
+  v33:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One V3.3 step at a time; while the pick runs, later triggers queue
+    # (GitHub keeps only the newest waiting one and cancels older waiting ones).
+    concurrency:
+      group: nse-v33
+      cancel-in-progress: false
+
+    steps:
+      - name: Trading window check (Mon-Fri 9:40-15:45 IST)
+        id: win
+        run: |
+          hhmm=$(TZ=Asia/Kolkata date +%H%M); dow=$(TZ=Asia/Kolkata date +%u)
+          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0940 ] && [ "$hhmm" -le 1545 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "outside the V3.3 window ($hhmm IST) - nothing to do"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.win.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.win.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - if: steps.win.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      # V3.3 state + its history / NSE-archive / earnings caches (own key
+      # prefix: never mixes with the scan's nse-live-state- cache).
+      - name: Restore V3.3 state + data cache
+        if: steps.win.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v33
+            backtest/cache
+            backtest/ml/cache
+          key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nse-v33-
+
+      - name: Run V3.3 step
+        id: v33
+        if: steps.win.outputs.run == 'true'
+        timeout-minutes: 50
+        run: python live_v33.py
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+
+      # Save only when the step changed something (pick / stop / close), not
+      # on every 2-minute check.
+      - name: Save V3.3 state + data cache
+        if: always() && steps.win.outputs.run == 'true' && steps.v33.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            live_state/v33
+            backtest/cache
+            backtest/ml/cache
+          key: nse-v33-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload V3.3 trades
+        if: always() && steps.win.outputs.run == 'true' && steps.v33.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-v33-${{ github.run_id }}
+          path: live_state/v33
           if-no-files-found: ignore
           retention-days: 30

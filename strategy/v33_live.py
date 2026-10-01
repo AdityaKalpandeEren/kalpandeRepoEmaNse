@@ -12,6 +12,7 @@ history in a replay (tests/parity). Everything else - prior sessions,
 daily history, NSE bhavcopies, events - comes from the same caches and
 loaders as training.
 """
+import time
 from datetime import date, timedelta
 
 import numpy as np
@@ -64,27 +65,40 @@ def _add_today_index_rows(m: dict, today: date, today_5m) -> None:
             add("sector_day", code, key)
 
 
+LAST_TIMINGS: dict = {}     # seconds per phase of the last build_rows() call (for the run log)
+
+
 def build_rows(today: date, symbols: list, today_5m, verbose=True) -> pd.DataFrame:
     """One V3.3 feature row per symbol for `today` (labels are NaN)."""
+    t_start = time.time()
     tok = access_token()
     frm = (today - timedelta(days=45)).strftime("%Y-%m-%d")
     prev = (today - timedelta(days=1)).strftime("%Y-%m-%d")
     m = load_market(frm, prev, extend_to=today)
     _add_today_index_rows(m, today, today_5m)
     rows = []
+    tm = {"market": time.time() - t_start, "today_5m": 0.0, "history_5m": 0.0, "daily": 0.0, "context": 0.0}
     for sym in symbols:
         try:
+            t = time.time()
             rec = opening_row(today_5m(sym))
+            tm["today_5m"] += time.time() - t
             if rec is None:
                 continue
+            t = time.time()
             hist = load_symbol_history_cached(sym, 5, frm, prev, tok)
+            tm["history_5m"] += time.time() - t
             past = intraday_day_table(hist)
             prior_vol = past["vol30"].tail(20) if len(past) else pd.Series(dtype=float)
             rec["rvol30"] = rec["vol30"] / prior_vol.mean() if len(prior_vol) >= 10 and prior_vol.mean() > 0 else np.nan
+            t = time.time()
             daily = load_daily_cached(sym, DAILY_FROM, prev, tok)
+            tm["daily"] += time.time() - t
             if len(daily) < 260:
                 continue
-            f = row_features(sym, today, rec, symbol_context(sym, daily, m), m)
+            t = time.time()
+            f = row_features(sym, today, rec, symbol_context(sym, daily, m), m)   # incl. earnings dates (Yahoo)
+            tm["context"] += time.time() - t
             if f is not None:
                 rows.append(f)
         except Exception as e:
@@ -92,8 +106,13 @@ def build_rows(today: date, symbols: list, today_5m, verbose=True) -> pd.DataFra
                 print(f"  {sym}: skipped ({str(e)[:70]})")
     ds = pd.DataFrame(rows)
     if ds.empty:
+        LAST_TIMINGS.clear(); LAST_TIMINGS.update({k: round(v) for k, v in tm.items()})
         return ds
-    return add_nse_features(ds, today - timedelta(days=45), today, as_of=today, verbose=False)
+    t = time.time()
+    out = add_nse_features(ds, today - timedelta(days=45), today, as_of=today, verbose=False)
+    tm["nse_archives"] = time.time() - t
+    LAST_TIMINGS.clear(); LAST_TIMINGS.update({k: round(v) for k, v in tm.items()})
+    return out
 
 
 def score(rows: pd.DataFrame, bundle: dict) -> pd.DataFrame:
