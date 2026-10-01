@@ -1,0 +1,83 @@
+# V4.0 - daily cross-sectional ML ranking model for NSE large caps.
+# Every number that changes results lives here. Paths are relative to the
+# repo root.
+
+seed: 42
+
+paths:
+  cache: swing/cache            # raw daily files + built panels (git-ignored)
+  results: swing/results        # reports, trade logs, saved models (git-ignored)
+
+data:
+  start: "2013-01-01"        # first bhavcopy downloaded (features need ~1y warm-up)
+  end: null                  # null = yesterday
+  download_workers: 6
+
+universe:
+  # Point-in-time NIFTY-100 proxy: NSE does not publish free historical
+  # constituent lists, so each month the universe is rebuilt from that
+  # day's bhavcopy as the top-N EQ stocks by trailing median traded value
+  # (the main driver of index inclusion). Stocks that were later delisted
+  # or renamed are included while they qualified - no survivorship bias.
+  size: 100
+  value_window: 126          # trading days of median traded value
+  min_history: 252           # trading days listed before eligible
+  min_price: 20.0
+  rebuild: monthly
+
+label:
+  horizon: 5                 # trading days; also try 1 or 20
+  # forward return from the NEXT open (t+1) to the open H days later -
+  # exactly what the backtest can earn when trading at the next open.
+
+features:
+  windows: [5, 10, 21, 63, 126, 252]
+  cross_sectional: true      # add per-day rank of every stock feature
+  drop: []                   # features to exclude (e.g. if SHAP flags one)
+
+models:
+  candidates: [mom_baseline, rev_baseline, combo_baseline, lgbm_rank, lgbm_reg, xgb_reg, ensemble]
+  optuna_trials: 12          # per fold, inside the fold's training data only
+  optuna_timeout_s: 150
+  early_stopping_rounds: 50
+
+validation:
+  first_test: "2017-01-01"   # walk-forward test blocks start here
+  refit_months: 12           # retrain every 12 months (expanding window)
+  holdout_start: "2025-07-01"   # last ~15 months: untouched until the final run
+  embargo_days: 5            # extra gap after the purge (label horizon + 1)
+  inner_val_frac: 0.2        # last 20% of each fold's train dates -> Optuna validation
+
+portfolio:
+  top_n: 10
+  rebalance_days: 5          # = horizon
+  hold_buffer: 2.0           # keep a holding while its rank <= top_n * buffer (cuts turnover)
+  capital: 1000000           # INR, for per-order costs and ADV limits
+  long_short: false          # true needs F&O (not implemented: long-only cash delivery)
+
+risk:
+  sizing: inverse_vol        # inverse_vol | equal
+  vol_window: 63
+  max_weight: 0.15
+  max_sector_weight: 0.30
+  max_adv_frac: 0.02         # a position may not exceed 2% of its 20-day avg traded value
+  dd_breaker: 0.15           # portfolio drawdown that halves exposure ...
+  dd_resume: 0.08            # ... until drawdown recovers above this
+  regime_filter: false       # true = 50% exposure when VIX > 1y 80th pct AND NIFTY < 200DMA
+
+costs:                       # equity DELIVERY (CNC), per side unless stated
+  brokerage_pct: 0.0         # many brokers: zero delivery brokerage ...
+  brokerage_cap: 20.0        # ... or pct capped at Rs 20/order (set pct > 0)
+  stt: 0.001                 # 0.1% on buy AND sell (delivery)
+  exchange: 0.0000297        # NSE transaction charge
+  sebi: 0.000001             # Rs 10 / crore
+  gst: 0.18                  # on brokerage + exchange + SEBI
+  stamp_buy: 0.00015         # 0.015% on buy
+  dp_per_sell: 15.93         # CDSL DP charge per scrip per sell day (incl. GST)
+  slippage_bps: 12           # per side, applied to the open price
+  t1_sale_proceeds_same_day: true   # brokers let delivery sale proceeds fund same-day buys
+
+report:
+  risk_free: 0.065           # annual, for excess-return Sharpe / Sortino
+  suspicious_sharpe: 3.0     # above this after costs -> treat as a bug, investigate
+  shap_dominance: 0.30       # flag any feature with > 30% of total mean |SHAP|
