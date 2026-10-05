@@ -262,6 +262,15 @@ INDIA_NEWS_GOOGLE_ENABLED = os.getenv("INDIA_NEWS_GOOGLE_ENABLED", "true").lower
 INDIA_NEWS_NAMES = {
     "DRREDDY": ("Dr Reddy's", "Reddy"), "DIVISLAB": ("Divi's Laboratories", "Divi"),
     "SUNPHARMA": ("Sun Pharma", "Sun Pharma"), "APOLLOHOSP": ("Apollo Hospitals", "Apollo Hospital"),
+    # Names shared with foreign companies / people / words ("Trent Williams",
+    # "Titan International", Siemens AG, "Willmott Dixon"): Indian names only.
+    "HYUNDAI": ("Hyundai Motor India", "Hyundai Motor India"),
+    "TITAN": ("Titan Company", "Titan Company", "Titan shares", "Titan share price"),
+    "TRENT": ("Trent Ltd", "Trent Ltd", "Trent shares", "Trent share price", "Zudio"),
+    "SIEMENS": ("Siemens Ltd", "Siemens Ltd", "Siemens India", "Siemens shares"),
+    "DIXON": ("Dixon Technologies", "Dixon Tech"),
+    "FORTIS": ("Fortis Healthcare", "Fortis Healthcare", "Fortis Hospital"),
+    "ETERNAL": ("Eternal Ltd", "Eternal Ltd", "Eternal shares", "Eternal share price", "Zomato", "Blinkit"),
     "MEDANTA": ("Medanta", "Medanta"), "KIMS": ("KIMS Hospitals", "KIMS"),
     "LALPATHLAB": ("Dr Lal PathLabs", "Lal Path"), "MAXHEALTH": ("Max Healthcare", "Max Healthcare"),
     "ASTERDM": ("Aster DM Healthcare", "Aster DM"), "RAINBOW": ("Rainbow Children's Medicare", "Rainbow Children"),

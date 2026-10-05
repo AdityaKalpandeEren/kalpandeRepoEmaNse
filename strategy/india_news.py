@@ -137,7 +137,14 @@ def stock_headlines(symbol: str, lookback_h: float, now: datetime = None) -> lis
     items = []
     if config.INDIA_NEWS_GOOGLE_ENABLED:
         days = max(1, int(-(-lookback_h // 24)))
-        q = quote_plus(f'"{search_name(symbol)}" when:{days}d')
+        # registered names are often truncated ("DIXON TECHNO") - also search
+        # the name token used for relevance ("DIXON")
+        from strategy.news_catalyst import _company_tokens
+        phrases = [search_name(symbol)]
+        for tok in _company_tokens(symbol)[1:]:
+            if tok.lower() not in {p.lower() for p in phrases}:
+                phrases.append(tok)
+        q = quote_plus(" OR ".join(f'"{p}"' for p in phrases) + f" when:{days}d")
         items += fetch_feed(f"https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en", google=True)
     items += all_market_headlines(lookback_h, now)
     return [x for x in _fresh(items, lookback_h, now) if is_relevant(x[1], symbol)]
