@@ -37,6 +37,7 @@ Scoring:
 """
 import json
 import math
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -190,7 +191,7 @@ def _company_tokens(ticker: str) -> list:
         return _names[ticker]
     tokens = [ticker]
     if ticker in config.INDIA_NEWS_NAMES:     # abbreviated / ambiguous registered names
-        tokens.append(config.INDIA_NEWS_NAMES[ticker][1])
+        tokens.extend(config.INDIA_NEWS_NAMES[ticker][1:])   # one or more name tokens
         _names[ticker] = tokens
         return tokens
     try:
@@ -204,7 +205,9 @@ def _company_tokens(ticker: str) -> list:
             name = info.get("longName") or info.get("shortName") or ""
         core = _NAME_SUFFIX_RX.sub(" ", name).split()
         if core:
-            if core[0].upper() in _GROUP_PREFIXES and len(core) >= 2:
+            # group prefix ("TATA STEEL") or a short first word ("PB FINTECH"):
+            # the first word alone is ambiguous / too short - keep two
+            if (core[0].upper() in _GROUP_PREFIXES or len(core[0]) < 3) and len(core) >= 2:
                 tokens.append(f"{core[0]} {core[1]}")
             elif len(core[0]) >= 3:
                 tokens.append(core[0])
@@ -215,18 +218,40 @@ def _company_tokens(ticker: str) -> list:
 
 
 def is_relevant(text: str, ticker: str) -> bool:
-    for tok in _company_tokens(ticker):
-        if tok == ticker:
-            # Bare tickers are matched case-sensitively and only when long
+    for i, tok in enumerate(_company_tokens(ticker)):
+        if i == 0:
+            # The bare ticker is matched case-sensitively and only when long
             # enough not to be an ordinary word ('ON', 'IT', 'ALL'); short
             # ones must appear as (T) or $T.
             if re.search(rf"[($]{re.escape(tok)}\b", text):
                 return True
             if len(tok) >= 3 and re.search(rf"\b{re.escape(tok)}\b", text):
                 return True
-        elif re.search(rf"\b{re.escape(tok)}".replace("\\ ", r"\s+"), text, re.I):
+        elif " " in tok:
+            if re.search(rf"\b{re.escape(tok)}".replace("\\ ", r"\s+"), text, re.I):
+                return True
+        # A one-word company name - often identical to the ticker (MPHASIS,
+        # FORTIS, TITAN), which used to send it down the case-sensitive
+        # ticker path and miss "Mphasis". Title case or CAPS only ("eternal"
+        # is an ordinary word), and only in a stock-market headline: "Trent
+        # Williams", "Willmott Dixon", "Titan International" are not news
+        # about TRENT, DIXON or TITAN.
+        elif (re.search(rf"\b({re.escape(tok.capitalize())}|{re.escape(tok.upper())})\b", text)
+              and _MARKET_CONTEXT_RX.search(text)):
             return True
     return False
+
+
+# Words that put a headline on the stock-market page - required for matches
+# on a bare one-word company name (see is_relevant).
+_MARKET_CONTEXT_RX = re.compile(
+    r"\b(shares?|stocks?|share price|stock price|scrip|equity|market cap|m-?cap|nse|bse|sensex|nifty|"
+    r"q[1-4]|quarter(ly)?|results?|earnings|profit|revenue|ebitda|margins?|guidance|outlook|"
+    r"orders?|contracts?|deals?|merger|acquisitions?|acquires?|stake|ipo|ofs|qip|dividend|bonus|buyback|"
+    r"brokerage|target|rating|upgrade[sd]?|downgrade[sd]?|buy|sell|hold|"
+    r"rall(y|ies)|surges?|jumps?|soars?|gains?|falls?|slumps?|plunges?|tumbles?|slides?|crash(es)?|"
+    r"52-week|block deal|fii|dii|mutual funds?|investors?|sebi|irdai|rbi|cci|nclt|"
+    r"business update|sales|volumes?|launch(es)?|plant|capex|expansion)\b", re.I)
 
 
 def _is_counterparty(text: str, ticker: str) -> bool:
@@ -489,3 +514,88 @@ def exit_check(symbol: str, direction: str):
     if sign * mkt.score <= -config.ML_V2_NEWS_EXIT:
         return f"bad market catalyst: {mkt.summary}"
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Decision log: every live news check L_ML_META_V2 / V3 make (veto, boost,
+# plain trade or skip) with the scores and the headline behind them -
+# vetoed candidates otherwise leave no trace, so whether news ever protects
+# a trade could not be measured. live_state/reports/ is uploaded with the
+# day's paper-trading artifact.
+# ═══════════════════════════════════════════════════════════════════
+DECISION_FIELDS = ["logged_at", "candle", "model", "symbol", "direction", "setup", "prob", "base_bar",
+                   "final_bar", "decision", "veto_reason", "news", "news_method", "news_items", "news_headline",
+                   "mkt", "mkt_method", "mkt_items", "summary"]
+
+
+def _decisions_path() -> str:
+    d = os.path.join(config.LIVE_STATE_DIR, "reports")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "news_decisions.csv")
+
+
+def log_decision(model: str, symbol: str, direction: str, candle, setup: str, prob: float, base_bar: float,
+                 veto, adj: float, sym: CatalystRead = None, mkt: CatalystRead = None, summary: str = "") -> str:
+    """Record one news-checked candidate; returns the decision label:
+    VETO | SKIP (below the bar even after news) | TRADE_BOOSTED (only
+    trades because aligned news lowered the bar) | TRADE."""
+    final_bar = base_bar + adj
+    if veto:
+        decision = "VETO"
+    elif prob < final_bar:
+        decision = "SKIP"
+    elif prob < base_bar:
+        decision = "TRADE_BOOSTED"
+    else:
+        decision = "TRADE"
+    sym, mkt = sym or CatalystRead(), mkt or CatalystRead()
+    detail = summary or (f"news {sym.score:+.2f} ({sym.method}, {sym.n_items}) "
+                         f"mkt {mkt.score:+.2f} ({mkt.method}, {mkt.n_items})")
+    print(f"[news-decision] {model} {symbol} {direction} {setup} p={prob:.2f} bar {base_bar:.2f}->{final_bar:.2f} "
+          f"{detail} -> {decision}" + (f": {veto}" if veto else ""), flush=True)
+    row = {"logged_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "candle": str(candle),
+           "model": model, "symbol": symbol, "direction": direction, "setup": setup, "prob": round(prob, 4),
+           "base_bar": round(base_bar, 4), "final_bar": round(final_bar, 4), "decision": decision,
+           "veto_reason": veto or "", "news": sym.score, "news_method": sym.method, "news_items": sym.n_items,
+           "news_headline": sym.top_headline[:200], "mkt": mkt.score, "mkt_method": mkt.method,
+           "mkt_items": mkt.n_items, "summary": summary[:300]}
+    try:
+        import csv
+        path = _decisions_path()
+        new = not os.path.exists(path)
+        with open(path, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=DECISION_FIELDS)
+            if new:
+                w.writeheader()
+            w.writerow(row)
+    except Exception as e:
+        print(f"[news] could not log decision: {e!r}")
+    return decision
+
+
+def decisions_summary(day: str) -> str:
+    """EOD report block: per model, how news changed today's candidates."""
+    path = _decisions_path()
+    if not os.path.exists(path):
+        return ""
+    try:
+        import pandas as pd
+        d = pd.read_csv(path)
+    except Exception:
+        return ""
+    d = d[d["candle"].astype(str).str[:10] == day]
+    if d.empty:
+        return ""
+    lines = ["📰 NEWS DECISIONS today (candidates near the bar):"]
+    for model, g in d.groupby("model"):
+        c = g["decision"].value_counts()
+        line = (f"{model}: {len(g)} checked | TRADE {c.get('TRADE', 0)} | BOOSTED {c.get('TRADE_BOOSTED', 0)} | "
+                f"VETO {c.get('VETO', 0)} | SKIP {c.get('SKIP', 0)}")
+        if model == "L_ML_META_V2":
+            m = g["news_method"].astype(str)
+            line += (f" | stock news found {(g['news_items'] > 0).mean() * 100:.0f}%, "
+                     f"LLM-scored {m.str.startswith('llm').sum()}/{(m != 'none').sum()}")
+        lines.append(line)
+        for _, v in g[g["decision"] == "VETO"].head(5).iterrows():
+            lines.append(f"   veto {v['symbol']} p={v['prob']:.2f}: {str(v['veto_reason'])[:120]}")
+    return "\n".join(lines)
