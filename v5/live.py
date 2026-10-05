@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
 import shutil
@@ -69,11 +70,42 @@ def save_state(st: dict) -> None:
     os.replace(tmp, _path("state.json"))
 
 
-def notify(text: str, telegram: bool) -> None:
-    print(text, flush=True)
-    if telegram:
-        from paper_trading.research_live import send_text
-        send_text(text)
+def notify(text: str, telegram: bool, table: list | None = None) -> None:
+    """`table` lines go in a monospace <pre> block so Telegram keeps the
+    columns aligned (plain text uses a proportional font); falls back to
+    plain text if Telegram rejects the HTML."""
+    plain = text + ("\n" + "\n".join(table) if table else "")
+    print(plain, flush=True)
+    if not telegram:
+        return
+    from paper_trading.research_live import send_text
+    if table:
+        msg = html.escape(text) + "\n<pre>" + html.escape("\n".join(table)) + "</pre>"
+        if len(msg) < 3900 and send_text(msg, parse_mode="HTML"):
+            return
+    send_text(plain)
+
+
+def holdings_table(st: dict, prices: dict, equity: float) -> list:
+    """Per-stock lines, best first: P&L vs cost incl. buy charges (sell
+    charges not deducted). <= 38 chars wide - fits a phone without wrapping."""
+    rows = []
+    for sym, p in st["positions"].items():
+        px = float(prices.get(sym, p["last_px"]))
+        val = p["qty"] * px
+        rows.append((sym, p["qty"], (val / p["cost"] - 1) * 100, val - p["cost"], val / equity * 100))
+    if not rows:
+        return []
+    rows.sort(key=lambda r: -r[2])
+    out = [f"{'Stock':<10} {'Qty':>4} {'P&L%':>6} {'P&L Rs':>8} {'Wt%':>4}",
+           "-" * 36]
+    out += [f"{s[:10]:<10} {q:>4} {pct:>+6.1f} {pnl:>+8,.0f} {wt:>4.1f}" for s, q, pct, pnl, wt in rows]
+    cost = sum(p["cost"] for p in st["positions"].values())
+    pnl = sum(r[3] for r in rows)
+    out += ["-" * 36,
+            f"{'Total':<10} {len(rows):>4} {pnl / cost * 100:>+6.1f} {pnl:>+8,.0f} {sum(r[4] for r in rows):>4.0f}",
+            f"Up {sum(r[3] > 0 for r in rows)} | Down {sum(r[3] < 0 for r in rows)} | Cash Rs {st['cash']:,.0f}"]
+    return out
 
 
 def _set_output(changed: bool) -> None:
@@ -374,13 +406,9 @@ def run_day(telegram: bool) -> bool:
         eq_now = equity_at(st, prices_now)
     else:
         eq_now = eq_prev
-        movers = sorted(((sym, p["last_px"] / (p["cost"] / p["qty"]) - 1) for sym, p in st["positions"].items()),
-                        key=lambda kv: kv[1])
+        prices_now = prices_prev
         lines = [f"📊 V5.0 SWING PAPER {today} (marked at the {last.date()} close) - next rebalance in "
                  f"{cfg['portfolio']['rebalance_days'] - st['sessions_since_rebalance']} session(s)"]
-        if movers:
-            lines.append("Best: " + ", ".join(f"{s} {r * 100:+.1f}%" for s, r in movers[::-1][:3])
-                         + " | Worst: " + ", ".join(f"{s} {r * 100:+.1f}%" for s, r in movers[:3]))
     tot = eq_now / st["start_equity"] - 1
     nf = nifty_last / st["nifty_start"] - 1
     invested = eq_now - st["cash"]
@@ -393,7 +421,7 @@ def run_day(telegram: bool) -> bool:
         daily.pop()                      # a second run today (late start) replaces the first mark
     daily.append({"date": str(today), "equity": round(eq_now, 2), "nifty": nifty_last})
     save_state(st)
-    notify("\n".join(lines), telegram)
+    notify("\n".join(lines), telegram, holdings_table(st, prices_now, eq_now))
     return True
 
 

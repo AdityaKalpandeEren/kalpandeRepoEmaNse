@@ -71,9 +71,10 @@ ALL_TRADES_CSV = "paper_trades_all.csv"
 # the Markdown parse mode alerts/telegram_bot.py uses)
 # ═══════════════════════════════════════════════════════════════════
 
-def _tg(method: str, **kwargs):
+def _tg(method: str, **kwargs) -> bool:
+    """True if Telegram accepted the call."""
     if not config.LIVE_RESEARCH_TELEGRAM or not config.TELEGRAM_BOT_TOKEN:
-        return
+        return False
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}"
     chat_id = config.LIVE_RESEARCH_CHAT_ID or config.TELEGRAM_CHAT_ID
     try:
@@ -81,20 +82,26 @@ def _tg(method: str, **kwargs):
                              timeout=20, **kwargs)
         if resp.status_code != 200:
             print(f"[research-live] Telegram {method} failed: {resp.status_code} {resp.text[:200]}")
+        return resp.status_code == 200
     except Exception as e:
         print(f"[research-live] Telegram {method} error: {e!r}")
+        return False
 
 
-def send_text(text: str):
+def send_text(text: str, parse_mode: str = None) -> bool:
+    """Send text; True if every part was accepted. With parse_mode the
+    caller keeps the message under the limit (a split could cut a tag)."""
+    extra = {"parse_mode": parse_mode} if parse_mode else {}
     # Telegram caps a message at 4096 chars - split on line boundaries.
-    chunk = ""
+    ok, chunk = True, ""
     for line in text.splitlines(keepends=True):
         if len(chunk) + len(line) > 3900:
-            _tg("sendMessage", data={"text": chunk})
+            ok &= _tg("sendMessage", data={"text": chunk, **extra})
             chunk = ""
         chunk += line
     if chunk.strip():
-        _tg("sendMessage", data={"text": chunk})
+        ok &= _tg("sendMessage", data={"text": chunk, **extra})
+    return ok
 
 
 def send_document(path: str, caption: str = ""):
