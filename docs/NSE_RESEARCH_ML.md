@@ -86,6 +86,27 @@ Every version did worse out of sample than taking every candidate with no model 
 it can be removed from the live research list. Top inputs by importance were overnight macro (USD-INR, S&P 500,
 Brent, 1-day), then days to next earnings, so the stock-level intraday features added little.
 
+**Gross edge first (2026-10-05), `backtest/ml/research_v3_gross_edge.py`:** before training any filter, look for a
+setup that wins *before* charges and still wins after. Same dataset and day split as retrain r2; every candidate
+re-simulated from the cached 5-minute candles with wider stops / no target / 15:10 flat (shock exit not modelled).
+
+- Before charges every setup is ~0R (train: −0.04R to +0.06R). Charges are ~0.19R at the current ~0.6% stops,
+  ~0.12R at 1%, ~0.08R at 1.5%.
+- Rule screen: 14,880 rules (6 exits × 15 setups incl. "ALL" × 103 inputs × bottom/top fifth). **0** won on TRAIN
+  (net > 0, day-t ≥ 2, n ≥ 300), so none reached validation and no ML filter was trained.
+- Exits under V3's live rules (cooldown, 10/day), exit chosen on validation = 1.5% stop:
+
+| Block | Exit | Trades | Win % | Avg R | Total R | Days + | Day-t |
+|---|---|---|---|---|---|---|---|
+| Val  | current (≈0.6% stop, target, shock) | 480 | 38.8 | −0.139 | −66.9 | 15/48 | −1.98 |
+| Val  | 1.5% stop, no target, 15:10 flat | 480 | 41.0 | −0.055 | −26.3 | 19/48 | −0.83 |
+| Test | current | 480 | 41.0 | −0.149 | −71.5 | 16/48 | −2.95 |
+| Test | 1.5% stop, no target, 15:10 flat | 470 | 41.3 | **−0.049** | −22.9 | 16/47 | −0.98 |
+
+Wider stops cut the loss by about two thirds (they shrink charges in R) but nothing turns positive: these intraday
+setups have no edge before charges, so there is nothing for an ML filter to select. **V3 intraday is closed as a
+research line**; the signal that does exist (overnight macro, day-level ranking) is already used by V3.3 and V5.
+
 ## Swing strategies on daily candles (added 2026-09-27)
 
 `strategy/swing_nse.py`, `backtest/run_swing_nse.py`, daily candles cached per year (`backtest/candle_cache.py`).
