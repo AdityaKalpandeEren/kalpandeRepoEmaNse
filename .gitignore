@@ -14,6 +14,7 @@ backtest/ml/data/dataset.csv
 backtest/ml/data/dataset_v3.csv
 backtest/ml/data/dataset_v32.csv
 backtest/ml/data/dataset_v33.csv
+backtest/ml/data/dataset_v3_r2.csv
 
 # local outputs / editor temp files - never commit
 backtest/results/
