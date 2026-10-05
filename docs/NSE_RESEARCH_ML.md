@@ -70,6 +70,22 @@ most favourable crude impulse −0.25, strongest sector vs NIFTY −0.21, all ca
 Every slice loses ~0.15–0.30R after NSE charges: for 5-minute intraday entries squared off at 15:15, none of these
 ideas has an edge, so no filter (V1/V2/V3) can create one.
 
+**Retrain r2 (2026-10-05), 3x the data:** `build_dataset_v3.py` over 268 symbols, 2025-10-01..2026-10-01, long only →
+`backtest/ml/data/dataset_v3_r2.csv` (639,425 candidates, 239 days; git-ignored). Split train 143 / val 48 / test 48 days
+(test 2026-07-27..2026-10-01). Trained three ways, varying only `--min-trades` (minimum validation trades for the threshold):
+
+| `--min-trades` | Chosen on val | Val trades / exp R | **Test trades** | **Test win %** | **Test exp R** | Test days + | Baseline exp R | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| 30  | full_v3/hgb_shallow p≥0.50 | 49 / +0.22  | 20  | 30.0 | **−0.221** | 0/2  | −0.116 | FAILED |
+| 100 | full_v3/hgb_leafy p≥0.50   | 107 / +0.07 | 68  | 33.8 | **−0.287** | 1/12 | −0.116 | FAILED |
+| 200 | full_v3/hgb_shallow p≥0.45 | 214 / −0.09 | 143 | 39.9 | **−0.160** | 6/18 | −0.116 | FAILED |
+
+Every version did worse out of sample than taking every candidate with no model (−0.116R, itself a loss), and with
+200 trades even validation was negative. More data did not create an edge, consistent with the direct checks above.
+**Decision: no new model is shipped.** Production `L_ML_META_V3` keeps its old model (threshold 0.675, 0 trades), and
+it can be removed from the live research list. Top inputs by importance were overnight macro (USD-INR, S&P 500,
+Brent, 1-day), then days to next earnings, so the stock-level intraday features added little.
+
 ## Swing strategies on daily candles (added 2026-09-27)
 
 `strategy/swing_nse.py`, `backtest/run_swing_nse.py`, daily candles cached per year (`backtest/candle_cache.py`).
