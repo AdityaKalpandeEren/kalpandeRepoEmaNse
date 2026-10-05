@@ -192,6 +192,14 @@ def todays_open(symbol: str, isin: str | None = None) -> float | None:
     return None
 
 
+def market_open_today() -> bool:
+    """False on an NSE holiday: no 9:15 candle today for two of the most
+    liquid stocks (checked after 09:20). Without this check V5's first run,
+    on the Gandhi Jayanti holiday (2026-10-02), 'rebalanced' with no
+    opening prices, bought nothing and still started its 5-session wait."""
+    return any(todays_open(s) is not None for s in ("RELIANCE", "HDFCBANK"))
+
+
 def equity_at(st: dict, prices: dict) -> float:
     return st["cash"] + sum(p["qty"] * prices.get(sym, p["last_px"]) for sym, p in st["positions"].items())
 
@@ -214,6 +222,17 @@ def run_day(telegram: bool) -> bool:
         return False
     if now.hour * 60 + now.minute < 9 * 60 + 20:
         print(f"{now:%H:%M} - waiting for 09:20 IST (needs today's opening prices).")
+        return False
+    if not market_open_today():
+        # Holiday (or no Upstox data at all): not a session - nothing is
+        # counted or traded. last_day marks today done so later triggers skip.
+        st = st or {}
+        if st.get("closed_day") != str(today):
+            st.update(closed_day=str(today), last_day=str(today))
+            save_state(st)
+            notify(f"V5.0 SWING PAPER {today}: NSE closed today (no 9:15 prices) - no session counted, "
+                   f"no trades.", telegram)
+            return True
         return False
 
     bundle = joblib.load(MODEL)
@@ -239,7 +258,11 @@ def run_day(telegram: bool) -> bool:
     st["nifty_start"] = st["nifty_start"] or nifty_last
     st["start_equity"] = st["start_equity"] or eq_prev
     st["sessions_since_rebalance"] = st.get("sessions_since_rebalance", 0) + 1
-    rebalance = st["sessions_since_rebalance"] >= cfg["portfolio"]["rebalance_days"]
+    # Also rebalance at once when the last rebalance could not buy anything
+    # (missing opening prices) or the portfolio has never been invested.
+    never_invested = not st["positions"] and not os.path.exists(_path("trades.csv"))
+    rebalance = (st["sessions_since_rebalance"] >= cfg["portfolio"]["rebalance_days"]
+                 or st.get("rebalance_pending", False) or never_invested)
 
     lines = []
     if rebalance:
@@ -316,6 +339,8 @@ def run_day(telegram: bool) -> bool:
             buys.append(f"{sym} {qty} @ {fill:.2f} ({wt * 100:.1f}%)")
         st["sessions_since_rebalance"] = 0
         st["last_rebalance"] = str(today)
+        # targets but no fills at all (no opening prices) -> try again next session
+        st["rebalance_pending"] = bool(target) and not buys and not st["positions"]
         head = (f"📈 V5.0 SWING PAPER - REBALANCE {today} (signal: {last.date()} close; fills at today's open "
                 f"incl. delivery costs)")
         lines = [head] + ([f"BUY ({len(buys)}): " + "; ".join(buys)] if buys else []) \
