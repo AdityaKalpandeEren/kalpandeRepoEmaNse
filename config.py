@@ -393,7 +393,11 @@ LIVE_EOD_REPORT_MINUTE = 20
 # ═══════════════════════════════════════════════════════════════════
 ML_V3_MODEL_PATH = "backtest/ml/model/meta_model_v3.joblib"
 ML_V3_DATASET_PATH = "backtest/ml/data/dataset_v3.csv"
-ML_V3_MIN_PROB = os.getenv("ML_V3_MIN_PROB", "auto")
+# Bar lowered from the model's own 0.675 ("auto") to 0.60 on 2026-10-06 (user):
+# at 0.675 V3 never traded live (max live p ~0.58-0.62). On the 4 sessions the
+# model never saw (Sep 28 - Oct 1): 0.60 -> 5 trades, ~1/day, -0.18R avg vs
+# -0.36R for every candidate. Paper only; "auto" restores the model's bar.
+ML_V3_MIN_PROB = os.getenv("ML_V3_MIN_PROB", "0.60")
 ML_V3_MIN_STOP_PCT = float(os.getenv("ML_V3_MIN_STOP_PCT", "0.005"))   # 0.5%
 ML_V3_BETA_WINDOW = 120            # trading days for the rolling sector betas
 ML_V3_BETA_MIN_OBS = 60
