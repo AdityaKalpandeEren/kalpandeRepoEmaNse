@@ -355,6 +355,10 @@ LIVE_RESEARCH_DIRECTIONS = [d.strip() for d in os.getenv(
     "LIVE_RESEARCH_DIRECTIONS", "long").split(",") if d.strip()]
 LIVE_RESEARCH_TELEGRAM = os.getenv("LIVE_RESEARCH_TELEGRAM", "true").lower() == "true"
 LIVE_RESEARCH_CHAT_ID = os.getenv("LIVE_RESEARCH_CHAT_ID", "")
+# Extra Telegram receivers (e.g. a group), comma-separated chat ids. Every
+# alert / report sent to the main chat is also sent to each of these
+# (GitHub secret TELEGRAM_GROUP_CHAT_ID; a group id looks like -100...).
+TELEGRAM_EXTRA_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_EXTRA_CHAT_IDS", "").split(",") if c.strip()]
 LIVE_STATE_DIR = os.getenv("LIVE_STATE_DIR", "live_state")
 LIVE_ALERT_MAX_AGE_MIN = 15
 LIVE_RESEARCH_V2_LIVE_CONTEXT = os.getenv("LIVE_RESEARCH_V2_LIVE_CONTEXT", "true").lower() == "true"
