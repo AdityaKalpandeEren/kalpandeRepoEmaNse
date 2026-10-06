@@ -25,3 +25,4 @@ paper_trades.db
 swing/cache/
 swing/results/
 live_state/
+backtest/ml/results_v34.csv

@@ -222,3 +222,23 @@ python -m backtest.ml.build_dataset_v32 --workers 8 && python -m backtest.ml.tra
   `RELIANCEPOWER`→`RPOWER`, `GMRINFRA`→`GMRAIRPORT`, `TATAMOTORS`→`TMPV`/`TMCV`, `ZOMATO`→`ETERNAL`.
 - Consider a minimum stop width for NSE (costs dominate tight stops) — not implemented; would change strategy logic.
 - The ML `.joblib` files are needed in production; the datasets (`backtest/ml/data/*.csv`) are gitignored.
+
+### V3.4 - can V3.3 trade less and keep its edge? (2026-10-06) - NO
+`backtest/ml/research_v34.py`: same data, split, model and exact cost model as `train_v33.py`. Pre-registered
+variants (K 3/5, Rs 5L/10L per stock, gate none / top-50% conviction / top-30% conviction / predicted-return
+floor), one chosen on validation by annualised return:
+
+| | Validation | Test (re-confirmation) |
+|---|---|---|
+| Chosen: K5, Rs 10L, top-30% conviction days | +14.9%/yr (t 1.58) | **+0.2%/yr** (t 0.06, 39 days) |
+| Live V3.3: K5, Rs 5L, every day | +10.5% (t 0.80) | +6.6% (t 0.55) |
+| K5, Rs 10L, every day | +11.8% | +7.9% |
+
+Conviction gating is overfit (fails on test at every K / size). Only the mechanical effect of a larger ticket
+(flat Rs 20 brokerage: 0.080% vs 0.085% round trip, ~+1.3%/yr) holds. Live V3.3 unchanged.
+
+### V6 - NSE post-earnings drift (2026-10-06) - NO
+Branch `nse_v6_earnings` (`v6/research.py`, research only). Discovery 2015-2021, 5,385 results events in a
+point-in-time top-200 universe: top-decile 2-day reactions drift only +0.4..+1.1% vs NIFTY over 5-60 sessions
+(t -0.6..+0.1); bottom decile keeps falling -1.3% in 5 sessions (t -3.4) - usable only as a sell/avoid filter.
+Delivery round trip 0.49% on Rs 50k. Test period (2022+) not used.
