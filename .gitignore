@@ -25,3 +25,6 @@ paper_trades.db
 swing/cache/
 swing/results/
 live_state/
+
+# V6 research outputs (events, grids)
+v6/results/
