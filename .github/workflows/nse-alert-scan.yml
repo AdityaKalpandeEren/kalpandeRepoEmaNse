@@ -64,6 +64,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Optional: a separate chat for research/paper alerts + EOD report.
           LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+          TELEGRAM_EXTRA_CHAT_IDS: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}   # second receiver (group)
           # Gemini (free tier) reads the news for V2 and V3; without it they
           # fall back to the keyword lexicon / sector rules.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -173,6 +174,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+          TELEGRAM_EXTRA_CHAT_IDS: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}   # second receiver (group)
 
       # Save only when the step changed something (pick / stop / close), not
       # on every 2-minute check.
@@ -274,6 +276,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+          TELEGRAM_EXTRA_CHAT_IDS: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}   # second receiver (group)
 
       - name: Save V5 state + NSE data cache
         if: always() && steps.win.outputs.run == 'true' && steps.v5.outputs.changed == 'true'

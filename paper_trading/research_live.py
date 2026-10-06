@@ -71,21 +71,35 @@ ALL_TRADES_CSV = "paper_trades_all.csv"
 # the Markdown parse mode alerts/telegram_bot.py uses)
 # ═══════════════════════════════════════════════════════════════════
 
-def _tg(method: str, **kwargs) -> bool:
-    """True if Telegram accepted the call."""
-    if not config.LIVE_RESEARCH_TELEGRAM or not config.TELEGRAM_BOT_TOKEN:
-        return False
+def _chats() -> list:
+    """Main chat first, then the extra receivers (TELEGRAM_EXTRA_CHAT_IDS), no duplicates."""
+    main = config.LIVE_RESEARCH_CHAT_ID or config.TELEGRAM_CHAT_ID
+    return list(dict.fromkeys([c for c in [main, *config.TELEGRAM_EXTRA_CHAT_IDS] if c]))
+
+
+def _post(method: str, chat_id: str, data: dict, files=None) -> bool:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}"
-    chat_id = config.LIVE_RESEARCH_CHAT_ID or config.TELEGRAM_CHAT_ID
     try:
-        resp = requests.post(url, data={"chat_id": chat_id, **kwargs.pop("data", {})},
-                             timeout=20, **kwargs)
+        resp = requests.post(url, data={"chat_id": chat_id, **data}, files=files, timeout=20)
         if resp.status_code != 200:
-            print(f"[research-live] Telegram {method} failed: {resp.status_code} {resp.text[:200]}")
+            print(f"[research-live] Telegram {method} to {chat_id} failed: {resp.status_code} {resp.text[:200]}")
         return resp.status_code == 200
     except Exception as e:
-        print(f"[research-live] Telegram {method} error: {e!r}")
+        print(f"[research-live] Telegram {method} to {chat_id} error: {e!r}")
         return False
+
+
+def _tg(method: str, **kwargs) -> bool:
+    """Send to every receiver. True if the MAIN chat accepted it (a failing
+    group never triggers a resend / fallback to the main chat)."""
+    if not config.LIVE_RESEARCH_TELEGRAM or not config.TELEGRAM_BOT_TOKEN:
+        return False
+    data = kwargs.pop("data", {})
+    ok_main = None
+    for chat in _chats():
+        ok = _post(method, chat, data)
+        ok_main = ok if ok_main is None else ok_main
+    return bool(ok_main)
 
 
 def send_text(text: str, parse_mode: str = None) -> bool:
@@ -105,8 +119,11 @@ def send_text(text: str, parse_mode: str = None) -> bool:
 
 
 def send_document(path: str, caption: str = ""):
-    with open(path, "rb") as f:
-        _tg("sendDocument", data={"caption": caption[:1000]}, files={"document": f})
+    if not config.LIVE_RESEARCH_TELEGRAM or not config.TELEGRAM_BOT_TOKEN:
+        return
+    for chat in _chats():                                  # a file is uploaded once per request
+        with open(path, "rb") as f:
+            _post("sendDocument", chat, {"caption": caption[:1000]}, files={"document": f})
 
 
 # ═══════════════════════════════════════════════════════════════════

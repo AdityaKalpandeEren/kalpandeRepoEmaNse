@@ -3,17 +3,16 @@ import config
 
 
 def send_alert(message: str):
+    """Production alert to the main chat and every TELEGRAM_EXTRA_CHAT_IDS receiver."""
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    resp = requests.post(
-        url,
-        data={
-            "chat_id": config.TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
-        },
-    )
-    if resp.status_code != 200:
-        print(f"Telegram send failed: {resp.status_code} {resp.text}")
+    chats = list(dict.fromkeys([c for c in [config.TELEGRAM_CHAT_ID, *config.TELEGRAM_EXTRA_CHAT_IDS] if c]))
+    for chat in chats:
+        try:
+            resp = requests.post(url, data={"chat_id": chat, "text": message, "parse_mode": "Markdown"}, timeout=20)
+            if resp.status_code != 200:
+                print(f"Telegram send to {chat} failed: {resp.status_code} {resp.text}")
+        except Exception as e:
+            print(f"Telegram send to {chat} error: {e!r}")
 
 
 def format_signal_message(signal) -> str:
