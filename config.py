@@ -499,4 +499,8 @@ V33_NOTIONAL_PER_STOCK = float(os.getenv("V33_NOTIONAL_PER_STOCK", "500000"))   
 V33_BROKERAGE_PER_ORDER = float(os.getenv("V33_BROKERAGE_PER_ORDER", "20"))     # Rs, flat
 V33_SLIPPAGE_BPS = float(os.getenv("V33_SLIPPAGE_BPS", "2"))                     # per side, assumed
 V33_TOP_K = int(os.getenv("V33_TOP_K", "0"))       # 0 = use the K chosen on validation (model bundle)
+# At most this many picks from one sector (OTHER is not capped; 0 = no cap).
+# Test block: cap 2 -> 0% of days with 3+ picks in one sector (22% before),
+# max drawdown -8.8% vs -9.1%, return +5.5% vs +6.6%/yr (validation +12.6% vs +10.5%).
+V33_MAX_PER_SECTOR = int(os.getenv("V33_MAX_PER_SECTOR", "2"))
 V33_STATE_DIR = os.getenv("V33_STATE_DIR", "live_state/v33")

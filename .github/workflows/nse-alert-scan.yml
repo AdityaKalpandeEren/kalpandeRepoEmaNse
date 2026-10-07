@@ -128,11 +128,11 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Trading window check (Mon-Fri 9:40-15:45 IST)
+      - name: Trading window check (Mon-Fri 9:20-15:45 IST; 9:20-9:44 pre-warms the 9:45 pick)
         id: win
         run: |
           hhmm=$(TZ=Asia/Kolkata date +%H%M); dow=$(TZ=Asia/Kolkata date +%u)
-          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0940 ] && [ "$hhmm" -le 1545 ]; then
+          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0920 ] && [ "$hhmm" -le 1545 ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"; echo "outside the V3.3 window ($hhmm IST) - nothing to do"
