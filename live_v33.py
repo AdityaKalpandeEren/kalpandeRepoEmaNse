@@ -119,6 +119,49 @@ def today_5m(key_or_symbol):
     return df
 
 
+def prefetch_today(symbols, workers: int = 6) -> None:
+    """Fetch today's 5-min candles for every symbol in parallel into the
+    today_5m cache (one HTTP session per thread) - was ~90 s sequential."""
+    import requests
+    from concurrent.futures import ThreadPoolExecutor
+    from data.instruments import get_instrument_key
+
+    def one(sym):
+        try:
+            key = get_instrument_key(sym)
+            r = requests.get(f"https://api.upstox.com/v3/historical-candle/intraday/{key}/minutes/5",
+                             headers={"Accept": "application/json", "Authorization": f"Bearer {config.UPSTOX_ACCESS_TOKEN}"},
+                             timeout=20)
+            r.raise_for_status()
+            df = pd.DataFrame(r.json().get("data", {}).get("candles", []),
+                              columns=["timestamp", "open", "high", "low", "close", "volume", "oi"])
+            if not df.empty:
+                df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_convert(IST)
+                df = df.sort_values("timestamp").reset_index(drop=True)
+                for c in ("open", "high", "low", "close", "volume"):
+                    df[c] = pd.to_numeric(df[c])
+            _c5[sym] = (time.time(), df)
+        except Exception:
+            pass                                             # today_5m() fetches it again on demand
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(one, symbols))
+
+
+def pick_with_sector_cap(ranked: pd.DataFrame, k: int, cap: int) -> pd.DataFrame:
+    """Top k by score, at most `cap` from one sector (OTHER uncapped; cap 0 = off)."""
+    if not cap or "sector" not in ranked:
+        return ranked.head(k)
+    keep, count = [], {}
+    for idx, sec in ranked["sector"].items():
+        if sec != "OTHER" and count.get(sec, 0) >= cap:
+            continue
+        keep.append(idx)
+        count[sec] = count.get(sec, 0) + 1
+        if len(keep) == k:
+            break
+    return ranked.loc[keep]
+
+
 def closed(df, now):
     return df[df["timestamp"] + timedelta(minutes=5) <= now].reset_index(drop=True) if not df.empty else df
 
@@ -136,6 +179,9 @@ def do_pick(st, now, telegram):
     # the six closed 9:15-9:40 candles; the 9:45 candle supplies the fill
     # price, exactly as in training.
     syms = universe()
+    t_pre = time.time()
+    prefetch_today(syms)
+    print(f"[V3.3] today's candles for {len(syms)} symbols in {time.time() - t_pre:.0f} s (parallel)", flush=True)
     rows = v33_live.build_rows(now.date(), syms, today_5m, verbose=False)
     print(f"[V3.3] features for {len(rows)}/{len(syms)} symbols in {time.time() - t0:.0f} s "
           f"(phases: {v33_live.LAST_TIMINGS})", flush=True)
@@ -151,7 +197,11 @@ def do_pick(st, now, telegram):
         notify(f"V3.3 PAPER {now.date()}: pick finished too late ({done_at:%H:%M} IST) - no trades today.", telegram)
         return
     late = done_at.hour * 60 + done_at.minute >= 9 * 60 + 55
-    top = ranked.head(k)
+    top = pick_with_sector_cap(ranked, k, config.V33_MAX_PER_SECTOR)
+    skipped = [s for s in ranked.head(len(top) + 10)["symbol"] if s not in set(top["symbol"])
+               and ranked.set_index("symbol").loc[s, "score"] > top["score"].min()]
+    if skipped:
+        print(f"[V3.3] sector cap {config.V33_MAX_PER_SECTOR}: skipped {skipped}", flush=True)
     if not late and top["entry"].isna().any():
         print("[V3.3] the 9:45 candle hasn't printed yet for every pick - retrying next run")
         return
@@ -184,6 +234,8 @@ def do_pick(st, now, telegram):
     for p in picks:
         lines.append(f"{p['rank']}. {p['symbol']}  buy {p['qty']} @ {p['entry']} (now {p['price_at_alert']}, "
                      f"{p['alert_drift_pct']:+.2f}%)  stop {p['stop']}  (score {p['score']:+.4f})")
+    if skipped:
+        lines.append(f"(sector cap {config.V33_MAX_PER_SECTOR}/sector: skipped {', '.join(skipped)})")
     lines.append("Exit 15:15 IST or 2% stop. Paper only.")
     notify("\n".join(lines), telegram)
 
@@ -278,7 +330,17 @@ def run_once(telegram=True) -> bool:
         return True
     if not st.get("picked"):
         if mins < 9 * 60 + 45:
-            print(f"{now:%H:%M} - waiting for 9:45 IST.")
+            if mins >= 9 * 60 + 20 and st.get("prewarmed") != str(now.date()):
+                # Pre-warm: fetch everything up to yesterday now, so the 9:45
+                # pick only needs today's candles (it took ~8 min on 2026-10-07
+                # and filled late).
+                from strategy import v33_live
+                info = v33_live.prewarm(now.date(), universe())
+                print(f"[V3.3] pre-warmed history for the 9:45 pick: {info}", flush=True)
+                st["prewarmed"] = str(now.date())
+                save_state(st)
+            else:
+                print(f"{now:%H:%M} - waiting for 9:45 IST.")
             return False
         if mins >= 14 * 60 + 30:
             print("Too late to pick today (after 14:30) - skipping the day.")

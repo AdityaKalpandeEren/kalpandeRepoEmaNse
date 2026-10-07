@@ -92,7 +92,13 @@ def load_symbol_history_cached(symbol: str, interval: int, from_date: str, to_da
         if complete_month and os.path.exists(path):
             frames.append(pd.read_pickle(path))
             continue
+        snap = None if complete_month else _read_today_snapshot(path, to_d)
+        if snap is not None:
+            frames.append(snap)
+            continue
         df = _fetch_month(symbol, interval, m_start, min(m_end, today), access_token)
+        if not complete_month:
+            _write_today_snapshot(path, df, to_d)
         if complete_month:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = f"{path}.tmp.{os.getpid()}"
@@ -151,6 +157,37 @@ def main():
 # years never change, the current year is always re-fetched.
 # ═══════════════════════════════════════════════════════════════════
 
+def _today_snapshot(path: str) -> str:
+    """Same-day copy of a still-open month / year. Once fetched, data up to
+    YESTERDAY can't change during today, so a request that ends before today
+    reuses it (V3.3 pre-warms these at 09:20 so the 09:45 pick doesn't
+    re-download ~268 symbols). Older day-copies are deleted."""
+    return f"{path}.day{date.today():%Y%m%d}"
+
+
+def _read_today_snapshot(path: str, to_d: date):
+    p = _today_snapshot(path)
+    if to_d < date.today() and os.path.exists(p):
+        return pd.read_pickle(p)
+    return None
+
+
+def _write_today_snapshot(path: str, df: pd.DataFrame, to_d: date) -> None:
+    if to_d >= date.today() or df is None:
+        return
+    import glob
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for old in glob.glob(f"{path}.day*"):
+        if not old.endswith(f".day{date.today():%Y%m%d}"):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    tmp = f"{_today_snapshot(path)}.tmp.{os.getpid()}"
+    df.to_pickle(tmp)
+    os.replace(tmp, _today_snapshot(path))
+
+
 def _daily_path(key_name: str, year: int) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key_name)
     return os.path.join(CACHE_DIR, "1d", safe, f"{year}.pkl")
@@ -173,6 +210,10 @@ def load_daily_cached(symbol_or_key: str, from_date: str, to_date: str, access_t
         if past_year and os.path.exists(path):
             frames.append(pd.read_pickle(path))
             continue
+        snap = None if past_year else _read_today_snapshot(path, to_d)
+        if snap is not None:
+            frames.append(snap)
+            continue
         y_from, y_to = date(year, 1, 1), min(date(year, 12, 31), date.today())
         last = None
         df = None
@@ -188,6 +229,8 @@ def load_daily_cached(symbol_or_key: str, from_date: str, to_date: str, access_t
         if last is not None:
             raise last
         df = df[["timestamp", "open", "high", "low", "close", "volume"]] if not df.empty else df
+        if not past_year:
+            _write_today_snapshot(path, df, to_d)
         if past_year:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = f"{path}.tmp.{os.getpid()}"

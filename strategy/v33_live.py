@@ -68,6 +68,27 @@ def _add_today_index_rows(m: dict, today: date, today_5m) -> None:
 LAST_TIMINGS: dict = {}     # seconds per phase of the last build_rows() call (for the run log)
 
 
+def prewarm(today: date, symbols: list) -> dict:
+    """Fetch everything the 9:45 pick needs that ends YESTERDAY (market and
+    sector index history, each stock's recent 5-min history and daily bars)
+    into the same-day cache (backtest/candle_cache), so the pick itself only
+    downloads today's opening candles. Returns timings + failures."""
+    t0 = time.time()
+    tok = access_token()
+    frm = (today - timedelta(days=45)).strftime("%Y-%m-%d")
+    prev = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    load_market(frm, prev, extend_to=today)
+    t1 = time.time()
+    fails = 0
+    for sym in symbols:
+        try:
+            load_symbol_history_cached(sym, 5, frm, prev, tok)
+            load_daily_cached(sym, DAILY_FROM, prev, tok)
+        except Exception:
+            fails += 1
+    return {"market_s": round(t1 - t0), "symbols_s": round(time.time() - t1), "symbols": len(symbols), "failed": fails}
+
+
 def build_rows(today: date, symbols: list, today_5m, verbose=True) -> pd.DataFrame:
     """One V3.3 feature row per symbol for `today` (labels are NaN)."""
     t_start = time.time()
