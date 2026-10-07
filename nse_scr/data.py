@@ -26,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "nse_scr", "cache")
 BASE = "https://www.nseindia.com/api/"
 # ETFs / funds trade in the EQ series but are not companies (same rule as V5) + index-tracking ETF names
-ETF_PATTERN = r"(BEES|ETF|IETF)$|^(LIQUID|GOLD|SILVER)|^(PSUBANK|BANKNIFTY|NIFTY|SENSEX|CPSE|BHARAT)"
+ETF_PATTERN = r"(?:BEES|ETF|IETF)$|^(?:LIQUID|GOLD|SILVER)|^(?:PSUBANK|BANKNIFTY|NIFTY|SENSEX|CPSE|BHARAT)"
 
 
 def _get(path: str):
