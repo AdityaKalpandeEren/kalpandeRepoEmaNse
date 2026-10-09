@@ -6,8 +6,10 @@ NSE LCR (Large-Cap Runners) - live paper trading, one step per run
     python -m nse_lcr.live --no-telegram
 
 Each run:
-  1. Universe = NIFTY 50 (MEGA) + rest of NIFTY 100 (LARGE) + NIFTY Midcap
-     150 (MID) from NSE's constituent CSVs (cached daily). Today's 5-min
+  1. DYNAMIC universe, rebuilt daily: NIFTY 50 (MEGA) + rest of NIFTY 100
+     (LARGE) + NIFTY Midcap 150 (MID) from NSE's constituent CSVs, PLUS every
+     other NSE stock with market cap >= Rs 25,000 cr (Yahoo screener; tagged
+     "MID · off-index" etc.). Today's 5-min
      candles for all ~250 are fetched in parallel (as V3.3's pick) and the
      DYNAMIC list = the stocks having a volume shock right now (time-adjusted
      volume >= RVOL_MIN, up >= WATCH_PCT) + open positions.
@@ -72,12 +74,51 @@ def notify(text, telegram):
         send_text(text)
 
 
+MIN_MCAP_CR = float(os.environ.get("NSE_LCR_MIN_MCAP_CR", "25000"))   # off-index stocks: market cap >= Rs 25,000 cr
+
+
+def _cap_bucket(mcap_cr: float) -> str:
+    return "MEGA" if mcap_cr >= 500_000 else ("LARGE" if mcap_cr >= 100_000 else "MID")
+
+
+def off_index_large_caps() -> dict:
+    """Every NSE stock with market cap >= MIN_MCAP_CR from Yahoo's free
+    screener (region in, exchange NSI) - catches large / mid companies that
+    are not in NIFTY 50 / 100 / Midcap 150 (new listings, recent risers).
+    Yahoo's live % change lags, so it is used for SIZE only; the volume
+    shock is checked on real-time Upstox candles. {symbol: (bucket, mcap_cr)}"""
+    import yfinance as yf
+    from yfinance import EquityQuery as EQ
+    q = EQ("and", [EQ("eq", ["region", "in"]), EQ("eq", ["exchange", "NSI"]), EQ("gte", ["intradaymarketcap", MIN_MCAP_CR * 1e7])])
+    out, offset = {}, 0
+    while True:
+        try:
+            r = yf.screen(q, sortField="intradaymarketcap", sortAsc=False, size=250, offset=offset)
+        except Exception as e:
+            print(f"[NSE LCR] Yahoo NSE screener failed: {e!r}")
+            break
+        qs = r.get("quotes", [])
+        for x in qs:
+            sym, mc = str(x.get("symbol", "")), x.get("marketCap") or 0
+            if sym.endswith(".NS") and mc:
+                out[sym[:-3]] = (_cap_bucket(mc / 1e7), round(mc / 1e7))
+        offset += len(qs)
+        if not qs or offset >= (r.get("total") or 0) or offset >= 1000:
+            break
+    return out
+
+
 def universe() -> dict:
-    """symbol -> MEGA / LARGE / MID, cached for the day."""
-    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_{datetime.now(IST):%Y%m%d}.json")
+    """symbol -> MEGA / LARGE / MID (index stocks) or 'MID · off-index' etc.
+    (off-index, by market cap). Rebuilt once a day:
+      1. NSE's NIFTY 50 / NIFTY 100 / Midcap 150 constituent CSVs
+      2. + every other NSE stock with market cap >= MIN_MCAP_CR (Yahoo)
+    Only symbols with an Upstox instrument key are kept."""
+    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_v2_{datetime.now(IST):%Y%m%d}.json")
     if os.path.exists(f):
         return json.load(open(f))
     import requests
+    from data.instruments import get_instrument_key
     caps = {}
     for name, tag in (("ind_nifty50list.csv", "MEGA"), ("ind_nifty100list.csv", "LARGE"), ("ind_niftymidcap150list.csv", "MID")):
         try:
@@ -86,6 +127,17 @@ def universe() -> dict:
                 caps.setdefault(str(s).strip(), tag)
         except Exception:
             continue
+    n_index = len(caps)
+    for sym, (bucket, _mc) in off_index_large_caps().items():
+        if sym in caps:
+            continue
+        try:
+            get_instrument_key(sym)
+        except Exception:
+            continue
+        caps[sym] = f"{bucket} · off-index"                        # not in NIFTY 50 / 100 / Midcap 150; sized by market cap
+    print(f"[NSE LCR] universe: {n_index} index stocks + {len(caps) - n_index} off-index large/mid caps "
+          f"(market cap >= Rs {MIN_MCAP_CR:,.0f} cr)", flush=True)
     if caps:
         os.makedirs(os.path.dirname(f), exist_ok=True)
         json.dump(caps, open(f, "w"))
