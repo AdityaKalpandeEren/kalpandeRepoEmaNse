@@ -62,3 +62,45 @@ def test_no_fill_on_locked_candle_and_charges_included():
     gross = (tr.exit / tr.entry - 1) * 100
     assert tr.ret_pct < gross                                     # NSE charges deducted
     assert 1 - tr.stop0 / tr.entry <= S.STOP_PCT + 1e-9
+
+
+def _mirror(x):
+    """The same day flipped upside down (a falling shocker): price -> 400 - price."""
+    y = x.copy()
+    y["open"], y["close"] = 400 - x["open"], 400 - x["close"]
+    y["high"], y["low"] = 400 - x["low"], 400 - x["high"]
+    return y
+
+
+def _short_sig(x, mode):
+    return S.short_setups(x, S.bar_features(x, 205.0, 200_000), mode)
+
+
+def test_short_setups_causal_and_live_matches_research():
+    x = _mirror(_day(seed=2))
+    full = _short_sig(x, "lod")
+    assert len(full) > 0
+    for cut in (40, 55, 70):
+        part = x.iloc[:cut]
+        assert list(_short_sig(part, "lod")) == [t for t in full if t <= part.index[-1]]
+    sig = full[0]
+    done = S.simulate_short("T", x, sig, mode="lod")
+    assert done.stop0 > done.entry and done.stop0 / done.entry - 1 <= S.SHORT_STOP_PCT + 1e-9
+    for cut in range(x.index.get_loc(sig) + 2, len(x) + 1):
+        tr = S.simulate_short("T", x.iloc[:cut], sig, final=False, mode="lod")
+        if tr.outcome != "OPEN":
+            assert (tr.exit_ts, round(tr.exit, 6), tr.outcome) == (done.exit_ts, round(done.exit, 6), done.outcome)
+            break
+
+
+def test_short_pnl_sign_charges_and_lower_circuit():
+    x = _mirror(_day(seed=4))
+    sig = _short_sig(x, "lod")[0]
+    tr = S.simulate_short("T", x, sig, mode="lod")
+    gross = (1 - tr.exit / tr.entry) * 100                        # a short gains when the price falls
+    assert tr.ret_pct < gross
+    i = x.index.get_loc(sig)
+    y = x.copy()
+    v = float(y.iloc[i + 1]["open"])
+    y.iloc[i + 1, :4] = [v, v, v, v]                              # lower-circuit lock: can't sell
+    assert S.simulate_short("T", y, sig, mode="lod") is None

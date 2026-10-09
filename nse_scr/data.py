@@ -4,10 +4,12 @@ data.nse_archives), rebuilt every run:
 
   shockers()     "volume gainers": today's volume vs the 1-week / 2-week
                  average volume (NSE's volume-shocker list)
-  movers()       top gainers (all securities) + most active by value and
-                 by volume
+  movers()       top gainers + top losers (all securities) + most active
+                 by value and by volume
   watchlist()    the union, as one frame: symbol, ltp, pct, volume,
                  vol_x_week (shocker ratio, when known), turnover, sources
+  eq_series()    symbols in NSE's EQ series (equity master) - only these
+                 can be sold short intraday (BE / BZ are trade-for-trade)
   cap_buckets()  LARGE = NIFTY 100, MID = NIFTY MIDCAP 150, else SMALL
                  (NSE index constituents, cached for the day)
 """
@@ -52,12 +54,13 @@ def shockers() -> pd.DataFrame:
 
 def movers() -> pd.DataFrame:
     rows = []
-    js = _get("live-analysis-variations?index=gainers") or {}
-    for r in (js.get("allSec") or {}).get("data", []) or []:
-        if r.get("series") not in (None, "EQ", "BE"):
-            continue
-        rows.append({"symbol": r.get("symbol"), "ltp": r.get("ltp"), "pct": r.get("perChange"),
-                     "volume": r.get("trade_quantity"), "turnover": (r.get("turnover") or 0) * 1e5, "source": "gainer"})
+    for idx, tag in (("gainers", "gainer"), ("loosers", "loser")):                # NSE spells it "loosers"
+        js = _get(f"live-analysis-variations?index={idx}") or {}
+        for r in (js.get("allSec") or {}).get("data", []) or []:
+            if r.get("series") not in (None, "EQ", "BE"):
+                continue
+            rows.append({"symbol": r.get("symbol"), "ltp": r.get("ltp"), "pct": r.get("perChange"),
+                         "volume": r.get("trade_quantity"), "turnover": (r.get("turnover") or 0) * 1e5, "source": tag})
     for kind in ("value", "volume"):
         js = _get(f"live-analysis-most-active-securities?index={kind}") or {}
         for r in js.get("data", []) or []:
@@ -78,6 +81,28 @@ def watchlist() -> pd.DataFrame:
     etf = w["symbol"].str.contains(ETF_PATTERN, regex=True, na=False) | \
         w.get("name", pd.Series("", index=w.index)).fillna("").str.contains(r"\bETF\b|Exchange Traded|Fund", case=False, regex=True)
     return w[~etf].drop(columns=["source"]).reset_index(drop=True)
+
+
+def eq_series() -> set:
+    """Symbols in the EQ series (NSE equity master, cached for the day) - the
+    only ones that can be shorted intraday. Empty set if NSE is unreachable."""
+    f = os.path.join(CACHE, f"eq_series_{date.today():%Y%m%d}.json")
+    if os.path.exists(f):
+        return set(json.load(open(f)))
+    import io
+    import requests
+    try:
+        r = requests.get("https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        e = pd.read_csv(io.StringIO(r.text))
+        e.columns = [c.strip() for c in e.columns]
+        out = sorted(e.loc[e["SERIES"].str.strip() == "EQ", "SYMBOL"].str.strip())
+    except Exception:
+        return set()
+    if out:
+        os.makedirs(CACHE, exist_ok=True)
+        json.dump(out, open(f, "w"))
+    return set(out)
 
 
 def cap_buckets() -> dict:

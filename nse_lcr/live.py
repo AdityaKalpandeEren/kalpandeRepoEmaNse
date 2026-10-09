@@ -8,7 +8,7 @@ NSE LCR (Large-Cap Runners) - live paper trading, one step per run
 Each run:
   1. DYNAMIC universe, rebuilt daily: NIFTY 50 (MEGA) + rest of NIFTY 100
      (LARGE) + NIFTY Midcap 150 (MID) from NSE's constituent CSVs, PLUS every
-     other NSE stock with market cap >= Rs 25,000 cr (Yahoo screener; tagged
+     other NSE stock with market cap >= Rs 20,000 cr (Yahoo screener; tagged
      "MID · off-index" etc.). Today's 5-min
      candles for all ~250 are fetched in parallel (as V3.3's pick) and the
      DYNAMIC list = the stocks having a volume shock right now (time-adjusted
@@ -74,7 +74,7 @@ def notify(text, telegram):
         send_text(text)
 
 
-MIN_MCAP_CR = float(os.environ.get("NSE_LCR_MIN_MCAP_CR", "25000"))   # off-index stocks: market cap >= Rs 25,000 cr
+MIN_MCAP_CR = float(os.environ.get("NSE_LCR_MIN_MCAP_CR", "20000"))   # off-index stocks: market cap >= Rs 20,000 cr
 
 
 def _cap_bucket(mcap_cr: float) -> str:
@@ -114,7 +114,7 @@ def universe() -> dict:
       1. NSE's NIFTY 50 / NIFTY 100 / Midcap 150 constituent CSVs
       2. + every other NSE stock with market cap >= MIN_MCAP_CR (Yahoo)
     Only symbols with an Upstox instrument key are kept."""
-    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_v2_{datetime.now(IST):%Y%m%d}.json")
+    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_{MIN_MCAP_CR:.0f}cr_{datetime.now(IST):%Y%m%d}.json")
     if os.path.exists(f):
         return json.load(open(f))
     import requests

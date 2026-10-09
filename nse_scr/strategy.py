@@ -74,6 +74,7 @@ def bar_features(x: pd.DataFrame, prev_close: float, avg_vol20: float) -> pd.Dat
     f["rvol"] = f["cum_vol"] / avg_vol20 if avg_vol20 and avg_vol20 > 0 else np.nan
     f["hod_prior"] = h.cummax().shift()
     f["new_hod"] = c > f["hod_prior"]
+    f["hod_pct"] = h.cummax() / prev_close - 1
     f["vol_ratio"] = v / v.where(v > 0).shift().rolling(12, min_periods=3).median()
     f["vwap"] = (tp * v).cumsum() / f["cum_vol"].replace(0, np.nan)
     f["dist_vwap"] = c / f["vwap"] - 1
@@ -159,6 +160,101 @@ def simulate(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None 
         return tr
     exitp = float(x.iloc[-1]["close"]) * (1 - SLIP)
     net = exitp / entry - 1 - charges_pct(entry, exitp)
+    tr.exit_ts, tr.exit, tr.outcome = x.index[-1], exitp, "SQUARE_OFF"
+    tr.ret_pct, tr.R = net * 100, net * entry / risk
+    return tr
+
+
+# ---------------------------------------------------------------- SHORT side
+# Intraday short (MIS: sell first, buy back the same day; EQ series only -
+# BE / T2T stocks can't be traded intraday). Two setups:
+#   "lod"   volume shocker DOWN >= WATCH_PCT, below VWAP, a new LOW of day
+#           on >= VOL_SURGE x candle volume (mirror of the long HOD rule)
+#   "fade"  volume shocker that spiked >= FADE_MIN_UP (day high vs previous
+#           close) and now closes back BELOW VWAP for the first time (the
+#           long-side research: big shocks reverse - fade the failed spike)
+# Entry = the next candle's open - slippage; no fill on a circuit-locked
+# candle (can't sell a stock frozen at its lower band). Stop above the
+# signal candle (lod) / the last FADE_LOOKBACK candles' high (fade), capped
+# at SHORT_STOP_PCT; breakeven after +1R, then trail above each closed
+# candle's high; square-off 15:15.
+#
+# RESEARCH (2026-10-09, nse_scr/research_short.py, Apr-Oct 2026, halves A/B,
+# net of exact charges + 10 bps/side): "lod" loses in both halves (-0.23 to
+# -0.47%/trade, 3/day). "fade" is near break-even: with a 3% stop and spike
+# >= 8%, -0.11% (A) / +0.02% (B) per trade, ~21 setups/day, day-level t
+# -1.5 / 0.0 - better than the longs (-0.4%) but NOT a proven edge.
+SHORT_MODE = "fade"          # 2026-10-09 research_short: lod lost in both halves (-0.23..-0.47%)
+SHORT_STOP_PCT = 0.03        # least-bad on half A: fade, 3% stop, spike >= 8%
+FADE_MIN_UP = 0.08
+FADE_LOOKBACK = 6
+
+
+def short_setups(x: pd.DataFrame, f: pd.DataFrame, mode: str | None = None) -> pd.Index:
+    mode = mode or SHORT_MODE
+    t = x.index.time
+    base = ((t >= FIRST_ENTRY) & (t <= LAST_ENTRY) & (f["rvol"] >= RVOL_MIN) & (f["turnover"] >= MIN_TURNOVER)
+            & (x["close"] >= MIN_PRICE) & ~f["locked"]).fillna(False).values
+    below = (f["dist_vwap"] < 0).fillna(False).values
+    if mode == "lod":
+        lod_prior = x["low"].cummin().shift()
+        m = base & below & ((f["pct"] <= -WATCH_PCT) & (x["close"] < lod_prior)
+                            & (f["vol_ratio"] >= VOL_SURGE)).fillna(False).values
+        return x.index[m]
+    first_loss = below & ~pd.Series(below, index=x.index).shift(fill_value=True).values
+    m = base & first_loss & (f["hod_pct"] >= FADE_MIN_UP).fillna(False).values
+    return x.index[m]
+
+
+def initial_stop_short(x: pd.DataFrame, i: int, entry: float, mode: str | None = None) -> float:
+    mode = mode or SHORT_MODE
+    h = x["high"].to_numpy(float)
+    s = float(h[i]) if mode == "lod" else float(h[max(0, i - FADE_LOOKBACK + 1):i + 1].max())
+    return min(max(s, entry * 1.003), entry * (1 + SHORT_STOP_PCT))
+
+
+def charges_pct_short(entry: float, exit_: float) -> float:
+    from strategy.v33_costs import round_trip
+    qty = max(int(NOTIONAL // entry), 1)
+    return round_trip(exit_, entry, qty, slippage_bps=0)["charges"] / (qty * entry)   # buy = cover, sell = entry (STT on it)
+
+
+def simulate_short(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None = None) -> Trade | None:
+    i = x.index.get_loc(sig_ts)
+    if i + 1 >= len(x):
+        return None
+    eb, ets = x.iloc[i + 1], x.index[i + 1]
+    if ets.time() >= SQUARE_OFF or float(eb["high"]) == float(eb["low"]):
+        return None                                           # square-off reached / circuit-locked: no fill
+    entry = float(eb["open"]) * (1 - SLIP)
+    stop = initial_stop_short(x, i, entry, mode)
+    risk = stop - entry
+    tr = Trade(sym, ets.date(), sig_ts, ets, entry, stop)
+    best = entry
+    for j in range(i + 1, len(x)):
+        ts, b = x.index[j], x.iloc[j]
+        if j > i + 1 and float(b["open"]) >= stop:
+            px, out = float(b["open"]), "STOP_GAP"
+        elif float(b["high"]) >= stop:
+            px, out = stop, ("STOP" if stop > entry else "TRAIL")
+        elif ts.time() >= SQUARE_OFF:
+            px, out = float(b["open"]), "SQUARE_OFF"
+        else:
+            best = min(best, float(b["close"]))
+            if entry - best >= risk:
+                stop = min(stop, entry, float(b["high"]))
+            continue
+        exitp = px * (1 + SLIP)
+        net = 1 - exitp / entry - charges_pct_short(entry, exitp)
+        tr.exit_ts, tr.exit, tr.outcome = ts, exitp, out
+        tr.ret_pct, tr.R = net * 100, net * entry / risk
+        return tr
+    if not final:
+        tr.stop0 = stop
+        tr.R = (entry - float(x.iloc[-1]["close"])) / risk
+        return tr
+    exitp = float(x.iloc[-1]["close"]) * (1 + SLIP)
+    net = 1 - exitp / entry - charges_pct_short(entry, exitp)
     tr.exit_ts, tr.exit, tr.outcome = x.index[-1], exitp, "SQUARE_OFF"
     tr.ret_pct, tr.R = net * 100, net * entry / risk
     return tr
