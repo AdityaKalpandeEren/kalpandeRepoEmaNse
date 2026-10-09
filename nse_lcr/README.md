@@ -4,7 +4,8 @@ The NSE version of US LCR, for **MEGA** (NIFTY 50), **LARGE** (the rest of NIFTY
 
 | Part | What it does |
 |---|---|
-| Dynamic list | All ~250 stocks are scanned every run (today's 5-min candles fetched in parallel). The ones with a **volume shock right now** are kept: **time-adjusted volume ≥ 2x** (vs what NSE stocks normally trade by that time), up ≥ 1.5%, ≥ ₹20 cr turnover, above VWAP |
+| Dynamic universe (daily) | **NIFTY 50 (MEGA) / NIFTY 100 (LARGE) / Midcap 150 (MID)** from NSE's CSVs, **plus every other NSE stock with market cap ≥ ₹25,000 cr** from Yahoo's free screener, tagged `MID · off-index` etc. (2026-10-09: 250 + 63 = 313; e.g. SBIFUNDS, MANIPALHOS, IDBI, RBLBANK, ATHERENERG, SONACOMS). `NSE_LCR_MIN_MCAP_CR` sets the cut-off |
+| Dynamic list | All ~310 stocks are scanned every run (today's 5-min candles fetched in parallel). The ones with a **volume shock right now** are kept: **time-adjusted volume ≥ 2x** (vs what NSE stocks normally trade by that time), up ≥ 1.5%, ≥ ₹20 cr turnover, above VWAP |
 | 📈 EMA rule | **Price above the 10- and 20-day daily EMAs.** Alerts show all six (10/20/30/40/60/180) as ✅/❌; **above all six = ⭐ PERFECT TRADE** |
 | 🏛️ Paper trades | **Pullback continuation**. Buy at the next candle's open (+5 bps); no fill on a circuit-locked candle; **stop under the pullback low (max 4%), no intraday trail**. **Stopped today = ⚡ INTRADAY trade** (intraday charges). **Still open at 15:15 = 🌙 carried as SWING** (delivery charges), held **up to 5 sessions**: exit on a gap below the stop, at the stop, or at 15:15 on day 5. ₹2 lakh per trade, max 13 new entries a day, max 30 open swings |
 | 🏛️📊 Separate report (15:20) | **NSE LCR REPORT**: today's ⚡ intraday trades, 🌙 carried tonight, 🏁 swing closed today, 📂 swing open (day n/5, unrealised P&L), today's realised P&L, all-time **INTRADAY vs SWING** |
