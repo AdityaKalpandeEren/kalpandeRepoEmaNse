@@ -15,9 +15,14 @@ Each run:
      +-1.5% (unusual volume, no move yet) - batched at most every 30 min.
   3. Every NEW setup on a closed candle (nse_lcr/strategy.py: pullback
      continuation above the 10 & 20-day EMAs) -> paper BUY at the next
-     candle's open; ⭐ PERFECT when above all six daily EMAs; exits
-     re-simulated each run with the SAME function as research; day report
-     after 15:20. Alerts go to every Telegram receiver (personal + group).
+     candle's open; ⭐ PERFECT when above all six daily EMAs.
+  4. INTRADAY + SWING (S1): stop under the pullback low (max 4%), no
+     intraday trail. Stopped today = INTRADAY trade (intraday charges);
+     still open at 15:15 = carried as SWING (delivery charges), held up to
+     5 sessions: exit at a gap below the stop, at the stop, or day-5 15:15.
+  5. Separate NSE LCR end-of-day report at 15:20: intraday trades, swing
+     carried / closed / open (day n/5, unrealised P&L), all-time by kind.
+Alerts go to every Telegram receiver (personal + group).
 Paper only.
 """
 from __future__ import annotations
@@ -111,6 +116,26 @@ def daily_ctx(syms, st) -> dict:
     return cache
 
 
+MAX_OPEN_SWING = int(os.environ.get("NSE_LCR_MAX_OPEN_SWING", "30"))
+
+
+def _pnl(p, net):
+    return round(p["qty"] * p["entry_raw"] * net, 0)
+
+
+def _log_trade(st, p):
+    f = _p("trades.csv")
+    new = not os.path.exists(f)
+    with open(f, "a", newline="") as fh:
+        row = {"exit_date": st["date"], **{k: p.get(k) for k in ("symbol", "bucket", "kind", "entry_date", "entry_ts", "entry_raw",
+                                                                   "stop", "exit_ts", "exit", "outcome", "sessions", "net_pct",
+                                                                   "pnl", "pct", "rvol", "qty", "perfect")}}
+        w = csv.DictWriter(fh, fieldnames=list(row))
+        if new:
+            w.writeheader()
+        w.writerow(row)
+
+
 def run(telegram: bool) -> bool:
     from live_v33 import _c5, prefetch_today
     now = datetime.now(IST)
@@ -120,24 +145,29 @@ def run(telegram: bool) -> bool:
     st = load_state()
     today = str(now.date())
     if st.get("date") != today:
-        st = {"date": today, "positions": [], "last_ts": {}, "taken": 0}
+        swing = st.get("swing", [])                                     # carried positions survive the day change
+        st = {"date": today, "positions": [], "last_ts": {}, "taken": 0, "swing": swing, "closed_today": [],
+              "carried_today": []}
     if mins < 9 * 60 + 20 or st.get("reported"):
         return False
     caps = universe()
-    syms = sorted(caps)
+    syms = sorted(set(caps) | {p["symbol"] for p in st["swing"]})
     ctx = daily_ctx(syms, st)
     prefetch_today(syms)
     bars, feats, watch_lines = {}, {}, []
     for s in syms:
         hit, c = _c5.get(s), ctx.get(s)
-        if not hit or c is None or hit[1] is None or hit[1].empty:
+        if not hit or hit[1] is None or hit[1].empty:
             continue
         x = hit[1].set_index("timestamp")[["open", "high", "low", "close", "volume"]]
         x = x[x.index + pd.Timedelta(minutes=5) <= pd.Timestamp(now)]
-        if len(x) < 3:
+        if len(x) < 1:
+            continue
+        bars[s] = x
+        if c is None or len(x) < 3:
             continue
         f = S.bar_features(x, c["prev_close"], c["avg_vol20"])
-        bars[s], feats[s] = x, f
+        feats[s] = f
         r = f.iloc[-1]
         if r["rvol"] >= WATCH_X and abs(r["pct"]) <= 0.015 and s not in st.setdefault("watch_sent", []):
             watch_lines.append((s, r))
@@ -146,45 +176,45 @@ def run(telegram: bool) -> bool:
         lines = []
         for s, r in sorted(watch_lines, key=lambda t: -t[1]["rvol"])[:10]:
             st["watch_sent"].append(s)
-            lines.append(f"📡 {s} [{caps[s]}] {r['pct'] * 100:+.1f}% | volume {r['rvol']:.1f}x normal for this time | "
+            lines.append(f"📡 {s} [{caps.get(s, '?')}] {r['pct'] * 100:+.1f}% | volume {r['rvol']:.1f}x normal for this time | "
                          f"turnover Rs {r['turnover'] / 1e7:,.0f} cr")
         st["watch_at"] = now.isoformat()
         notify("🏛️📡 NSE LCR VOLUME WATCH - large / mid caps with unusual volume, no move yet (watch only)\n" + "\n".join(lines), telegram)
-    held = {p["symbol"] for p in st["positions"] if p["status"] in ("PENDING", "OPEN")}
-    for s, x in bars.items():
-        f, c = feats[s], ctx[s]
+    busy = {p["symbol"] for p in st["positions"] if p["status"] in ("PENDING", "OPEN")} | {p["symbol"] for p in st["swing"]}
+    for s, f in feats.items():
+        x, c = bars[s], ctx[s]
         last = st["last_ts"].get(s)
         new = [ts for ts in S.setups(x, f, c["emas"]) if last is None or str(ts) > last]
         st["last_ts"][s] = str(x.index[-1])
         for ts in new:
-            if st["taken"] >= V_MAX or ts < x.index[-1] - pd.Timedelta(minutes=10) or s in held:
-                continue
-            if sum(p["symbol"] == s for p in st["positions"]) >= S.MAX_PER_SYMBOL_DAY:
+            if st["taken"] >= V_MAX or len(st["swing"]) >= MAX_OPEN_SWING or ts < x.index[-1] - pd.Timedelta(minutes=10) or s in busy:
                 continue
             r, close = f.loc[ts], float(x.loc[ts, "close"])
-            stop = S.initial_stop(x, x.index.get_loc(ts), close)
+            stop = S.swing_stop(x, x.index.get_loc(ts), close)
             perfect = S.is_perfect(close, c["emas"])
             st["taken"] += 1
-            held.add(s)
-            st["positions"].append({"symbol": s, "status": "PENDING", "signal_ts": str(ts), "bucket": caps[s],
+            busy.add(s)
+            st["positions"].append({"symbol": s, "status": "PENDING", "signal_ts": str(ts), "bucket": caps.get(s, "?"),
                                     "pct": round(float(r["pct"]) * 100, 2), "rvol": round(float(r["rvol"]), 1), "perfect": perfect})
             tag = ("⭐ PERFECT TRADE - above ALL daily EMAs (10/20/30/40/60/180)" if perfect
                    else "✳️ minimum trend - above the 10 & 20-day EMAs, not all longer ones")
-            notify(f"{HEADER}\n{tag}\n🚀 BUY {s} [{caps[s]}] ~Rs {close:.2f} (next 5-min candle open)\n"
+            notify(f"{HEADER}\n{tag}\n🚀 BUY {s} [{caps.get(s, '?')}] ~Rs {close:.2f} (next 5-min candle open)\n"
                    f"⚡ {float(r['pct']) * 100:+.1f}% today | volume {float(r['rvol']):.1f}x normal for this time | "
                    f"turnover Rs {float(r['turnover']) / 1e7:,.0f} cr\n📈 daily EMAs: {S.ema_tags(close, c['emas'])}\n"
-                   f"🛑 stop ~Rs {stop:.2f} ({(stop / close - 1) * 100:+.1f}%) | trail after +1R | square-off 15:15\n"
-                   f"trade {st['taken']}/{V_MAX} today | 🧪 UNPROVEN - backtest -0.1%/trade on NSE. Paper only.", telegram)
-    manage(st, bars, telegram)
+                   f"🛑 stop ~Rs {stop:.2f} ({(stop / close - 1) * 100:+.1f}%) | INTRADAY + SWING: if not stopped today it is "
+                   f"carried and held up to {S.SWING_DAYS} sessions\ntrade {st['taken']}/{V_MAX} today | "
+                   f"🧪 UNPROVEN (backtest ~+0.05%/trade, inconsistent halves). Paper only.", telegram)
+    manage_today(st, bars, mins, telegram)
+    manage_swing(st, bars, mins, telegram)
     if mins >= 15 * 60 + 20 and not st.get("reported"):
-        day_report(st, telegram)
+        eod_report(st, bars, telegram)
         st["reported"] = True
-    st.pop("daily_full", None)
     save_state(st)
     return True
 
 
-def manage(st, bars, telegram):
+def manage_today(st, bars, mins, telegram):
+    """Today's entries: stop-only on day 0; still open at 15:15 -> carried as swing."""
     for p in st["positions"]:
         if p["status"] not in ("PENDING", "OPEN"):
             continue
@@ -192,56 +222,97 @@ def manage(st, bars, telegram):
         sig = pd.Timestamp(p["signal_ts"])
         if x is None or sig not in x.index:
             continue
-        tr = S.simulate(p["symbol"], x, sig, final=False)
-        if tr is None:
-            if x.index[-1] > sig + pd.Timedelta(minutes=5):
-                p["status"] = "NOFILL"
+        r = S.day0_status(x, sig)
+        if r is None:
+            continue
+        if r["status"] == "NOFILL":
+            p["status"] = "NOFILL"
             continue
         if p["status"] == "PENDING":
-            p.update(status="OPEN", entry=round(tr.entry, 2), entry_ts=str(tr.entry_ts),
-                     stop_initial=round(S.initial_stop(x, x.index.get_loc(sig), tr.entry), 2),
-                     qty=max(int(S.NOTIONAL // tr.entry), 1))
-        if tr.outcome == "OPEN":
-            p["stop_now"] = round(tr.stop0, 2)
+            p.update(status="OPEN", entry_raw=round(r["entry_raw"], 2), entry_ts=str(r["entry_ts"]), entry_date=st["date"],
+                     stop=round(r["stop"], 2), qty=max(int(S.NOTIONAL // r["entry_raw"]), 1))
+        if r["status"] == "STOPPED":
+            net = S.intraday_net(p["entry_raw"], r["exit"])
+            p.update(status="CLOSED", kind="INTRADAY", exit=round(r["exit"], 2), exit_ts=str(r["exit_ts"]), outcome=r["outcome"],
+                     sessions=0, net_pct=round(net * 100, 2), pnl=_pnl(p, net))
+            _log_trade(st, p)
+            st["closed_today"].append(p)
+            notify(f"🏛️ NSE LCR EXIT ❌{'⭐' if p.get('perfect') else ''} {p['symbol']} INTRADAY stop: Rs {p['entry_raw']:.2f} -> "
+                   f"Rs {r['exit']:.2f} ({net * 100:+.2f}% net) | paper P&L Rs {p['pnl']:+,.0f}", telegram)
+        elif mins >= 15 * 60 + 15:
+            p["status"] = "CARRIED"
+            st["swing"].append({**p, "kind": "SWING", "sessions": 0, "carried_on": st["date"], "last_session": st["date"]})
+            st["carried_today"].append(p["symbol"])
+            last = float(x["close"].iloc[-1])
+            notify(f"🏛️🌙 NSE LCR CARRY {p['symbol']} as SWING (up to {S.SWING_DAYS} sessions): entry Rs {p['entry_raw']:.2f}, "
+                   f"now Rs {last:.2f} ({(last / p['entry_raw'] - 1) * 100:+.2f}%), stop Rs {p['stop']:.2f}", telegram)
+
+
+def manage_swing(st, bars, mins, telegram):
+    """Carried positions on later sessions: gap / stop exit, or the day-5 close."""
+    keep = []
+    for p in st["swing"]:
+        if p.get("carried_on") == st["date"]:                       # carried today - nothing more today
+            keep.append(p)
             continue
-        pnl = p["qty"] * tr.entry * tr.ret_pct / 100
-        p.update(status="CLOSED", exit=round(tr.exit, 2), exit_ts=str(tr.exit_ts), outcome=tr.outcome,
-                 R=round(tr.R, 2), ret_pct=round(tr.ret_pct, 2), pnl=round(pnl, 0))
-        f = _p("trades.csv")
-        new = not os.path.exists(f)
-        with open(f, "a", newline="") as fh:
-            row = {"date": st["date"], **{k: p.get(k) for k in ("symbol", "bucket", "signal_ts", "entry_ts", "entry",
-                                                                  "stop_initial", "exit_ts", "exit", "outcome", "R",
-                                                                  "ret_pct", "pnl", "pct", "rvol", "qty", "perfect")}}
-            w = csv.DictWriter(fh, fieldnames=list(row))
-            if new:
-                w.writeheader()
-            w.writerow(row)
-        mins = int((tr.exit_ts - tr.entry_ts).total_seconds() // 60)
-        notify(f"🏛️ NSE LCR EXIT {'✅' if tr.R > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} "
-               f"Rs {tr.entry:.2f} -> Rs {tr.exit:.2f} ({tr.ret_pct:+.2f}% net, {tr.R:+.2f}R) {tr.outcome} after {mins} min | "
-               f"paper P&L Rs {pnl:+,.0f}", telegram)
+        x = bars.get(p["symbol"])
+        if x is not None and len(x) and p.get("last_session") != st["date"]:
+            p["sessions"] = p.get("sessions", 0) + 1                    # count only days with market data (not holidays)
+            p["last_session"] = st["date"]
+        hit = S.swing_day_exit(x, p["stop"]) if x is not None and len(x) else None
+        if hit is None and p.get("sessions", 0) >= S.SWING_DAYS and mins >= 15 * 60 + 15 and x is not None and len(x):
+            hit = (float(x["close"].iloc[-1]), x.index[-1], "SWING_DAY5")
+        if hit is None:
+            p["last_px"] = float(x["close"].iloc[-1]) if x is not None and len(x) else p.get("last_px")
+            keep.append(p)
+            continue
+        exit_px, ts, outcome = hit
+        net = S.delivery_net(p["entry_raw"], exit_px)
+        p.update(status="CLOSED", exit=round(exit_px, 2), exit_ts=str(ts), outcome=outcome, net_pct=round(net * 100, 2),
+                 pnl=_pnl(p, net))
+        _log_trade(st, p)
+        st["closed_today"].append(p)
+        notify(f"🏛️ NSE LCR SWING EXIT {'✅' if net > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} after "
+               f"{p.get('sessions', 0)} session(s): Rs {p['entry_raw']:.2f} -> Rs {exit_px:.2f} ({net * 100:+.2f}% net, {outcome}) | "
+               f"paper P&L Rs {p['pnl']:+,.0f}", telegram)
+    st["swing"] = keep
 
 
-def day_report(st, telegram):
-    ps = [p for p in st["positions"] if p["status"] == "CLOSED"]
-    lines = [f"🏛️📊 NSE LCR LARGE-CAP RUNNERS - PAPER RESULT {st['date']}"]
-    if not ps:
-        lines.append("No large-cap runner trade today.")
-    for p in ps:
-        lines.append(f"{'✅' if p['R'] > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} [{p['bucket']}]: "
-                     f"{p['entry']:.2f} -> {p['exit']:.2f} ({p['ret_pct']:+.2f}%, {p['R']:+.2f}R, {p['outcome']}) Rs {p['pnl']:+,.0f}")
-    if ps:
-        lines.append(f"Day: Rs {sum(p['pnl'] for p in ps):+,.0f} on Rs {S.NOTIONAL:,.0f}/trade (net of charges)")
+def eod_report(st, bars, telegram):
+    """Separate NSE LCR end-of-day report: intraday + swing."""
+    lines = [f"🏛️📊 NSE LCR REPORT {st['date']} - intraday + swing (paper, UNPROVEN)"]
+    intra = [p for p in st["closed_today"] if p.get("kind") == "INTRADAY"]
+    sw_closed = [p for p in st["closed_today"] if p.get("kind") == "SWING"]
+    lines.append(f"\n⚡ INTRADAY (entered today, stopped today): {len(intra)}")
+    for p in intra:
+        lines.append(f"  ❌{'⭐' if p.get('perfect') else ''} {p['symbol']} [{p['bucket']}] {p['entry_raw']:.2f} -> {p['exit']:.2f} "
+                     f"{p['net_pct']:+.2f}% Rs {p['pnl']:+,.0f}")
+    lines.append(f"\n🌙 CARRIED TONIGHT as swing: {len(st['carried_today'])} {', '.join(st['carried_today'])}")
+    lines.append(f"\n🏁 SWING CLOSED TODAY: {len(sw_closed)}")
+    for p in sw_closed:
+        lines.append(f"  {'✅' if p['net_pct'] > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} day {p.get('sessions', 0)} "
+                     f"{p['entry_raw']:.2f} -> {p['exit']:.2f} {p['net_pct']:+.2f}% Rs {p['pnl']:+,.0f} ({p['outcome']})")
+    open_sw = st["swing"]
+    unreal = 0.0
+    lines.append(f"\n📂 SWING OPEN: {len(open_sw)}")
+    for p in sorted(open_sw, key=lambda q: q.get("carried_on", "")):
+        x = bars.get(p["symbol"])
+        px = float(x["close"].iloc[-1]) if x is not None and len(x) else p.get("last_px", p["entry_raw"])
+        u = p["qty"] * (px - p["entry_raw"])
+        unreal += u
+        lines.append(f"  {'⭐' if p.get('perfect') else '·'} {p['symbol']} [{p['bucket']}] day {p.get('sessions', 0)}/{S.SWING_DAYS} | "
+                     f"{p['entry_raw']:.2f} -> {px:.2f} ({(px / p['entry_raw'] - 1) * 100:+.2f}%) | stop {p['stop']:.2f} | Rs {u:+,.0f}")
+    realised = sum(p["pnl"] for p in st["closed_today"])
+    lines.append(f"\nToday realised: Rs {realised:+,.0f} | open swing (unrealised, before sell charges): Rs {unreal:+,.0f}")
     f = _p("trades.csv")
     if os.path.exists(f):
         t = pd.read_csv(f)
-        lines.append(f"ALL-TIME ({t['date'].nunique()} days, {len(t)} trades): Rs {t['pnl'].sum():+,.0f} | "
-                     f"win {(t['R'] > 0).mean() * 100:.0f}% | avg {t['ret_pct'].mean():+.2f}%/trade")
-        pf = t[t["perfect"].astype(str).str.lower() == "true"] if "perfect" in t else t.iloc[0:0]
-        if len(pf):
-            lines.append(f"⭐ PERFECT: {len(pf)} trades, Rs {pf['pnl'].sum():+,.0f} | other: {len(t) - len(pf)} trades, "
-                         f"Rs {t['pnl'].sum() - pf['pnl'].sum():+,.0f}")
+        for kind in ("INTRADAY", "SWING"):
+            k = t[t["kind"] == kind]
+            if len(k):
+                lines.append(f"ALL-TIME {kind}: {len(k)} trades, Rs {k['pnl'].sum():+,.0f}, win {(k['net_pct'] > 0).mean() * 100:.0f}%, "
+                             f"avg {k['net_pct'].mean():+.2f}%")
+        lines.append(f"ALL-TIME total: {len(t)} closed trades, Rs {t['pnl'].sum():+,.0f}")
     notify("\n".join(lines), telegram)
 
 

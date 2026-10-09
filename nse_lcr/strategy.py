@@ -184,3 +184,71 @@ def simulate(sym, x: pd.DataFrame, sig_ts, final: bool = True) -> Trade | None:
     tr.exit_ts, tr.exit, tr.outcome = x.index[-1], e, "SQUARE_OFF"
     tr.ret_pct, tr.R = net * 100, net * entry / risk
     return tr
+
+
+# ─── intraday + swing (S1, live since 2026-10-09) ───────────────────────
+# Hold from the entry with a wide structural stop and no intraday trail.
+# Stopped on day 0 = an INTRADAY trade (intraday charges); still open at
+# 15:15 = carried as a SWING trade (delivery charges), held up to SWING_DAYS
+# more sessions: exit at a gap below the stop (open), at the stop, or at the
+# day-5 close. Backtest (nse_lcr/research_swing.py --hold, 722 trades):
+# +0.18% / -0.15% per trade (halves), ~+0.05% overall; 55% stop on day 0
+# (-1.0%), day-5 holders +5.2%. UNPROVEN.
+SWING_STOP_CAP = 0.04
+SWING_DAYS = 5
+
+
+def swing_stop(x: pd.DataFrame, i: int, entry_raw: float) -> float:
+    c, h, lo, v = (x[k].to_numpy(float) for k in ("close", "high", "low", "volume"))
+    pl = pullback_low(h, lo, v, c, i)
+    s = pl if pl else entry_raw * (1 - SWING_STOP_CAP)
+    return max(min(s, entry_raw * 0.995), entry_raw * (1 - SWING_STOP_CAP))
+
+
+def day0_status(x: pd.DataFrame, sig_ts):
+    """Day 0 of an S1 trade on today's candles so far. None = not filled yet /
+    no fill (locked candle); else dict(entry_raw, entry_ts, stop, status
+    'OPEN' or 'STOPPED', exit, exit_ts, outcome)."""
+    i = x.index.get_loc(sig_ts)
+    if i + 1 >= len(x):
+        return None
+    eb, ets = x.iloc[i + 1], x.index[i + 1]
+    if ets.time() >= SQUARE_OFF or float(eb["high"]) == float(eb["low"]):
+        return {"status": "NOFILL"}
+    entry_raw = float(eb["open"])
+    stop = swing_stop(x, i, entry_raw)
+    out = {"entry_raw": entry_raw, "entry_ts": ets, "stop": stop, "status": "OPEN"}
+    for j in range(i + 1, len(x)):
+        b = x.iloc[j]
+        if j > i + 1 and float(b["open"]) <= stop:
+            return {**out, "status": "STOPPED", "exit": float(b["open"]), "exit_ts": x.index[j], "outcome": "DAY0_GAP"}
+        if float(b["low"]) <= stop:
+            return {**out, "status": "STOPPED", "exit": stop, "exit_ts": x.index[j], "outcome": "DAY0_STOP"}
+    return out
+
+
+def swing_day_exit(x: pd.DataFrame, stop: float):
+    """A carried position on a later session's candles: (exit, ts, outcome) or None."""
+    for j in range(len(x)):
+        b = x.iloc[j]
+        if float(b["open"]) <= stop:
+            return float(b["open"]), x.index[j], "SWING_GAP"
+        if float(b["low"]) <= stop:
+            return stop, x.index[j], "SWING_STOP"
+    return None
+
+
+def intraday_net(entry_raw: float, exit_raw: float) -> float:
+    e, x = entry_raw * (1 + SLIP), exit_raw * (1 - SLIP)
+    return x / e - 1 - charges_pct(e, x)
+
+
+def delivery_net(entry_raw: float, exit_raw: float) -> float:
+    from swing import config as cfgmod
+    from swing.backtest import costs as C
+    c = cfgmod.load()["costs"]
+    buy, sell = C.fill_price(entry_raw, "buy", c), C.fill_price(exit_raw, "sell", c)
+    qty = max(int(NOTIONAL // buy), 1)
+    paid = qty * buy + C.order_charges(qty * buy, "buy", c)
+    got = qty * sell - C.order_charges(qty * sell, "sell", c)
+    return got / paid - 1

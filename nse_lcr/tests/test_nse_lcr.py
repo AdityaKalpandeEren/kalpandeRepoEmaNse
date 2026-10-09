@@ -64,3 +64,14 @@ def test_locked_candle_no_fill_and_charges():
     assert S.simulate("T", y, sig) is None
     tr = S.simulate("T", x, sig)
     assert tr.ret_pct < (tr.exit / tr.entry - 1) * 100
+
+
+def test_swing_helpers():
+    x = _day(seed=1)
+    sig = _sig(x)[0]
+    r = S.day0_status(x, sig)
+    assert r["status"] in ("OPEN", "STOPPED") and 1 - r["stop"] / r["entry_raw"] <= S.SWING_STOP_CAP + 1e-9
+    later = x.copy()
+    later.iloc[0, 0] = r["stop"] * 0.95                                  # next session opens below the stop
+    assert S.swing_day_exit(later, r["stop"])[2] == "SWING_GAP"
+    assert S.delivery_net(100, 100) < S.intraday_net(100, 100) < 0       # delivery costs more than intraday
