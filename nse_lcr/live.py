@@ -114,7 +114,7 @@ def universe() -> dict:
       1. NSE's NIFTY 50 / NIFTY 100 / Midcap 150 constituent CSVs
       2. + every other NSE stock with market cap >= MIN_MCAP_CR (Yahoo)
     Only symbols with an Upstox instrument key are kept."""
-    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_{datetime.now(IST):%Y%m%d}.json")
+    f = os.path.join(ROOT, "nse_lcr", "cache", f"universe_v2_{datetime.now(IST):%Y%m%d}.json")
     if os.path.exists(f):
         return json.load(open(f))
     import requests
