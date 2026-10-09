@@ -33,3 +33,6 @@ backtest/ml/results_v34.csv
 
 # NSE SCR research data / caches
 nse_scr/cache/
+
+# NSE LCR research data
+nse_lcr/cache/

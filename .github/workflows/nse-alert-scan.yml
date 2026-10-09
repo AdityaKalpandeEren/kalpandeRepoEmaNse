@@ -402,3 +402,93 @@ jobs:
           gh cache list --repo "$GITHUB_REPOSITORY" --key nse-scr- --sort created_at --order desc --limit 100 \
             --json id,key --jq '.[] | select(.key | startswith("nse-scr-")) | .id' \
             | tail -n +11 | head -n 40 | xargs -r -n1 gh cache delete --repo "$GITHUB_REPOSITORY" || true
+
+  # NSE LCR - Large-Cap Runners (nse_lcr/live.py): NIFTY 50 (MEGA), NIFTY 100
+  # (LARGE) and Midcap 150 (MID) scanned every run in parallel; volume
+  # shockers (time-adjusted volume) above the 10 & 20-day EMAs -> 🏛️ alerts
+  # (⭐ PERFECT when above all six EMAs), volume watch and paper trades.
+  # Alerts go to every Telegram receiver (personal + group).
+  lcr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: write      # prune this job's old caches (last step)
+    concurrency:
+      group: nse-lcr
+      cancel-in-progress: false
+    steps:
+      - name: Trading window check (Mon-Fri 9:20-15:30 IST)
+        id: win
+        run: |
+          hhmm=$(TZ=Asia/Kolkata date +%H%M); dow=$(TZ=Asia/Kolkata date +%u)
+          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0920 ] && [ "$hhmm" -le 1530 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "outside the NSE LCR window ($hhmm IST) - nothing to do"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.win.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.win.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - if: steps.win.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Restore NSE LCR state + daily candles
+        if: steps.win.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/nse_lcr
+            nse_lcr/cache/universe_*.json
+            backtest/cache/candles/1d
+          key: nse-lcr-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nse-lcr-
+
+      - name: Run NSE LCR step
+        id: lcr
+        if: steps.win.outputs.run == 'true'
+        timeout-minutes: 9
+        run: python -m nse_lcr.live
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+          TELEGRAM_EXTRA_CHAT_IDS: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}   # second receiver (group)
+
+      - name: Save NSE LCR state + daily candles
+        if: always() && steps.win.outputs.run == 'true' && steps.lcr.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            live_state/nse_lcr
+            nse_lcr/cache/universe_*.json
+            backtest/cache/candles/1d
+          key: nse-lcr-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload NSE LCR trades
+        if: always() && steps.win.outputs.run == 'true' && steps.lcr.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-lcr-${{ github.run_id }}
+          path: live_state/nse_lcr
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Prune old NSE LCR caches
+        if: always() && steps.win.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key nse-lcr- --sort created_at --order desc --limit 100 \
+            --json id,key --jq '.[] | select(.key | startswith("nse-lcr-")) | .id' \
+            | tail -n +11 | head -n 40 | xargs -r -n1 gh cache delete --repo "$GITHUB_REPOSITORY" || true
