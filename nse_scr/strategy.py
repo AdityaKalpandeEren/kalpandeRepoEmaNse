@@ -124,15 +124,16 @@ def charges_pct(entry: float, exit_: float) -> float:
     return round_trip(entry, exit_, qty, slippage_bps=0)["charges"] / (qty * entry)
 
 
-def simulate(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None = None) -> Trade | None:
+def simulate(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None = None,
+             entry: float | None = None, stop: float | None = None) -> Trade | None:
     i = x.index.get_loc(sig_ts)
     if i + 1 >= len(x):
         return None
     eb, ets = x.iloc[i + 1], x.index[i + 1]
     if ets.time() >= SQUARE_OFF or float(eb["high"]) == float(eb["low"]):
         return None                                           # square-off reached / circuit-locked: no fill
-    entry = float(eb["open"]) * (1 + SLIP)
-    stop = initial_stop(x, i, entry, mode)
+    entry = float(eb["open"]) * (1 + SLIP) if entry is None else entry
+    stop = initial_stop(x, i, entry, mode) if stop is None else stop
     risk = entry - stop
     tr = Trade(sym, ets.date(), sig_ts, ets, entry, stop)
     best = entry
@@ -219,15 +220,16 @@ def charges_pct_short(entry: float, exit_: float) -> float:
     return round_trip(exit_, entry, qty, slippage_bps=0)["charges"] / (qty * entry)   # buy = cover, sell = entry (STT on it)
 
 
-def simulate_short(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None = None) -> Trade | None:
+def simulate_short(sym, x: pd.DataFrame, sig_ts, final: bool = True, mode: str | None = None,
+                   entry: float | None = None, stop: float | None = None) -> Trade | None:
     i = x.index.get_loc(sig_ts)
     if i + 1 >= len(x):
         return None
     eb, ets = x.iloc[i + 1], x.index[i + 1]
     if ets.time() >= SQUARE_OFF or float(eb["high"]) == float(eb["low"]):
         return None                                           # square-off reached / circuit-locked: no fill
-    entry = float(eb["open"]) * (1 - SLIP)
-    stop = initial_stop_short(x, i, entry, mode)
+    entry = float(eb["open"]) * (1 - SLIP) if entry is None else entry
+    stop = initial_stop_short(x, i, entry, mode) if stop is None else stop
     risk = stop - entry
     tr = Trade(sym, ets.date(), sig_ts, ets, entry, stop)
     best = entry

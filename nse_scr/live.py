@@ -244,15 +244,21 @@ def manage(st, bars, telegram):
         if x is None or sig not in x.index:
             continue
         short = p.get("side") == "SHORT"
-        tr = (S.simulate_short if short else S.simulate)(p["symbol"], x, sig, final=False)
-        if tr is None:
-            if x.index[-1] > sig + pd.Timedelta(minutes=5):
-                p["status"] = "NOFILL"                         # next candle was circuit-locked / past square-off
-            continue
+        sim = S.simulate_short if short else S.simulate
         if p["status"] == "PENDING":
+            tr = sim(p["symbol"], x, sig, final=False)
+            if tr is None:
+                if x.index[-1] > sig + pd.Timedelta(minutes=5):
+                    p["status"] = "NOFILL"                     # next candle was circuit-locked / past square-off
+                continue
             p.update(status="OPEN", entry=round(tr.entry, 2), entry_ts=str(tr.entry_ts),
                      stop_initial=round((S.initial_stop_short if short else S.initial_stop)(x, x.index.get_loc(sig), tr.entry), 2))
             p["qty"] = max(int(S.NOTIONAL // tr.entry), 1)
+        # exits use the entry / stop frozen at the fill: Yahoo revises recent candle
+        # volumes, so recomputing the structural stop each run could move it
+        tr = sim(p["symbol"], x, sig, final=False, entry=p["entry"], stop=p["stop_initial"])
+        if tr is None:
+            continue
         if tr.outcome == "OPEN":
             p["stop_now"] = round(tr.stop0, 2)
             continue
