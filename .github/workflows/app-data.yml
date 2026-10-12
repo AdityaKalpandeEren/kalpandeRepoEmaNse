@@ -1,0 +1,111 @@
+name: App Data
+
+# Publishes dashboard.json.gz for the "Nayan Kalpande Appreciation Society"
+# Android app (github.com/AdityaKalpandeEren/nkas-app). Kept OUT of the
+# production workflow on purpose: it only READS production's state caches and
+# run history - it never saves a cache, never trades, never sends Telegram - so
+# nothing here can affect paper trading or alerts.
+#
+# Triggers:
+#   workflow_run      - after every production "NSE Alert Scan" run, however that
+#                       run was started (cron-job.org or the backup schedule)
+#   workflow_dispatch - a cron-job.org job (every 10 min) as a safety net:
+#                       GitHub's own automatic triggers have not reliably started
+#                       workflows here, which is why production itself runs from
+#                       cron-job.org
+# Duplicate starts are harmless: the concurrency group queues and collapses
+# them, and the plan step restores only the caches that changed since the last
+# publish. Master copy: nkas-app/pipeline/nse-app-data.yml.
+on:
+  workflow_run:
+    workflows: ["NSE Alert Scan"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: app-data
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write     # upload the release asset
+      actions: read       # list caches + the production workflow's runs (health section)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: app_data
+
+      # export.py `plan` picks the newest state cache per system and restores
+      # only the ones that changed since the last publish (exact keys, with the
+      # production jobs' own path lists); `build` carries the rest over.
+      - name: Plan (changed state caches + production run health)
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sfL -o prev.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/dashboard-data/dashboard.json.gz" || rm -f prev.json.gz
+          python3 app_data/export.py plan --market NSE --prev prev.json.gz --health-out health.json >> "$GITHUB_OUTPUT"
+
+      - name: Restore research paper-trading state
+        if: steps.plan.outputs.research != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state
+            backtest/ml/cache
+          key: ${{ steps.plan.outputs.research }}
+
+      - name: Restore V3.3 state
+        if: steps.plan.outputs.nse_v33 != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v33
+            backtest/cache
+            backtest/ml/cache
+          key: ${{ steps.plan.outputs.nse_v33 }}
+
+      - name: Restore V5 state
+        if: steps.plan.outputs.nse_v5 != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v5
+            swing/cache
+          key: ${{ steps.plan.outputs.nse_v5 }}
+
+      - name: Restore NSE SCR state
+        if: steps.plan.outputs.nse_scr != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/nse_scr
+            nse_scr/cache/caps_*.json
+            backtest/cache/candles/1d
+          key: ${{ steps.plan.outputs.nse_scr }}
+
+      - name: Restore NSE LCR state
+        if: steps.plan.outputs.nse_lcr != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/nse_lcr
+            nse_lcr/cache/universe_*.json
+            backtest/cache/candles/1d
+          key: ${{ steps.plan.outputs.nse_lcr }}
+
+      - name: Build + publish dashboard.json.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCES: ${{ steps.plan.outputs.sources }}
+        run: |
+          python3 app_data/export.py build --market NSE --root . --prev prev.json.gz \
+            --sources "$SOURCES" --health health.json --out dashboard.json.gz
+          gh release view dashboard-data --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create dashboard-data --repo "$GITHUB_REPOSITORY" --prerelease --title "App data" \
+              --notes "Machine-written by the App Data workflow: dashboard.json.gz for the Nayan Kalpande Appreciation Society Android app. Not a software release."
+          gh release upload dashboard-data dashboard.json.gz --repo "$GITHUB_REPOSITORY" --clobber
