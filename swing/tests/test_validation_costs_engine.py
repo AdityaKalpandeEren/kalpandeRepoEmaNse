@@ -141,6 +141,22 @@ def test_deflated_sharpe_penalises_many_trials():
     assert many["DSR"] < few["DSR"]
 
 
+def test_stop_loss_sells_at_next_open(cfg):
+    days = pd.bdate_range("2020-01-01", periods=12)
+    path = [100, 101, 102, 103, 104, 105, 104, 90, 89, 92, 95, 96]   # day 7 closes ~14% under the day-5 entry
+    rows = [{"date": d, "entity": "A", "symbol": "A", "open": c, "high": c * 1.01, "low": c * 0.99, "close": c,
+             "prevclose": c, "adj_open": c, "adj_close": c, "value": 1e9} for d, c in zip(days, path)]
+    prices = engine.prepare_prices(pd.DataFrame(rows))
+    held = _run(prices, days, 4, cfg)                                 # stop off (default): still held
+    assert held.daily.loc[days[-1], "n_pos"] == 1
+    c_stop = {**cfg, "risk": {**cfg["risk"], "stop_loss": 0.10}}
+    res = _run(prices, days, 4, c_stop)
+    assert res.daily.loc[days[7], "n_pos"] == 1                       # stop is seen at the day-7 close ...
+    assert res.daily.loc[days[8], "n_pos"] == 0                       # ... and sold at the day-8 open
+    t = res.trades.iloc[0]
+    assert t["reason"] == "stop" and t["exit"] == days[8]
+
+
 def test_dd_breaker_trips_and_resets(cfg):
     ex = sizing.Exposure(cfg)
     assert ex.scale(100.0) == 1.0

@@ -78,6 +78,13 @@ jobs:
             swing/cache
           key: ${{ steps.plan.outputs.nse_v5 }}
 
+      - name: Restore V7 state
+        if: steps.plan.outputs.nse_v7 != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: live_state/v7
+          key: ${{ steps.plan.outputs.nse_v7 }}
+
       - name: Restore NSE SCR state
         if: steps.plan.outputs.nse_scr != ''
         uses: actions/cache/restore@v4
