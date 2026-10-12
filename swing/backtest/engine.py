@@ -18,6 +18,10 @@ Market-microstructure rules:
   * a stock that stops trading for good (delisted / merged) is closed at
     its last traded close
   * small re-weights of existing holdings (< 25% of target) are skipped
+  * optional per-stock stop-loss (risk.stop_loss, e.g. 0.10; off when unset):
+    a close at or below entry * (1 - stop_loss) sells the position at the
+    next open, and the name can't be bought again before the next rebalance
+    signal (Han, Zhou & Zhu 2016, "Taming momentum crashes")
 """
 from __future__ import annotations
 
@@ -71,6 +75,10 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
     mark: dict[str, float] = {}
     basis: dict[str, float] = {}            # rupees invested (incl. buy costs) in the open lot
     opened: dict[str, pd.Timestamp] = {}
+    entry_px: dict[str, float] = {}         # average adjusted fill price of the open lot
+    stop = cfg["risk"].get("stop_loss")
+    stop_queue: set[str] = set()            # stop hit at a close -> sell at the next open
+    stopped: set[str] = set()               # stopped since the last rebalance signal
     pending: pd.Series | None = None        # target weights to execute at next open
     exposure = sizing.Exposure(cfg)
     rows, trades, targets = [], [], []
@@ -78,7 +86,7 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
     rebalance_set = set(signal_days[::pcfg["rebalance_days"]])
     equity = cash
 
-    def sell(e: str, px_adj: float, d: pd.Timestamp, frac: float = 1.0) -> tuple[float, float]:
+    def sell(e: str, px_adj: float, d: pd.Timestamp, frac: float = 1.0, reason: str = "rebalance") -> tuple[float, float]:
         """Sell `frac` of the position at px_adj (adjusted price). Returns
         (value at the unslipped price, total cost incl. slippage)."""
         nonlocal cash, unsettled
@@ -95,8 +103,8 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
         basis[e] -= b
         if frac >= 0.999:
             trades.append({"entity": e, "entry": opened[e], "exit": d, "invested": b, "proceeds": proceeds,
-                           "ret": proceeds / b - 1 if b > 0 else np.nan})
-            for dct in (units, basis, opened, mark):
+                           "ret": proceeds / b - 1 if b > 0 else np.nan, "reason": reason})
+            for dct in (units, basis, opened, mark, entry_px):
                 dct.pop(e, None)
         return mid, mid - proceeds
 
@@ -112,6 +120,19 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
             v, fee = sell(e, last_close[e], d)
             traded_value += v
             paid += fee
+
+        # stop-loss exits decided at yesterday's close
+        if stop_queue and today is not None:
+            for e in list(stop_queue):
+                if e not in units:
+                    stop_queue.discard(e)
+                elif e in today.index and not today.at[e, "locked_down"]:
+                    v, fee = sell(e, today.at[e, "adj_open"], d, reason="stop")
+                    traded_value += v
+                    paid += fee
+                    stop_queue.discard(e)
+            if pending is not None:
+                pending = pending.drop([e for e in stopped if e in pending.index])
 
         if pending is not None and today is not None:
             eq_open = cash + unsettled + sum(units[e] * (today["adj_open"].get(e, np.nan)
@@ -150,7 +171,9 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
                     continue
                 gross = spend * want / (want + fee)
                 fee = spend - gross
-                units[e] = units.get(e, 0.0) + gross / fp
+                old_u = units.get(e, 0.0)
+                entry_px[e] = (old_u * entry_px.get(e, fp) + gross) / (old_u + gross / fp)
+                units[e] = old_u + gross / fp
                 basis[e] = basis.get(e, 0.0) + spend
                 opened.setdefault(e, d)
                 cash -= spend
@@ -163,6 +186,11 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
             for e in units:
                 if e in today.index:
                     mark[e] = today.at[e, "adj_close"]
+        if stop and today is not None:
+            for e in units:
+                if e in today.index and mark[e] <= entry_px.get(e, np.inf) * (1 - stop):
+                    stop_queue.add(e)
+                    stopped.add(e)
         invested = sum(units[e] * mark.get(e, 0.0) for e in units)
         prev_equity = equity
         equity = cash + unsettled + invested
@@ -172,8 +200,9 @@ def run(scores: pd.DataFrame, prices: pd.DataFrame, info: pd.DataFrame, ctx: pd.
 
         # signal after today's close -> orders for tomorrow's open
         if d in rebalance_set and today is not None:
-            s = sc[d]
-            names = sizing.select(s, set(units), pcfg["top_n"], pcfg["hold_buffer"])
+            s = sc[d].drop([e for e in stopped if e in sc[d].index])
+            stopped.clear()
+            names = sizing.select(s, set(units) - stop_queue, pcfg["top_n"], pcfg["hold_buffer"])
             dinfo = inf.get(d, pd.DataFrame())
             w = sizing.weights(names, dinfo.get("vol_63", pd.Series(dtype=float)),
                                dinfo.get("industry", pd.Series(dtype=object)), cfg)

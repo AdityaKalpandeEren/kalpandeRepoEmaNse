@@ -54,7 +54,7 @@ MARKETS = {
         "ccy": "INR", "tz": "Asia/Kolkata", "open": "09:15", "close": "15:30", "bench": "NIFTY 50",
         "workflow": "nse-alert-scan.yml",
         "groups": {"research": "nse-live-state-", "nse_v33": "nse-v33-", "nse_v5": "nse-v5-",
-                   "nse_scr": "nse-scr-", "nse_lcr": "nse-lcr-"},
+                   "nse_v7": "nse-v7-", "nse_scr": "nse-scr-", "nse_lcr": "nse-lcr-"},
     },
 }
 
@@ -401,6 +401,13 @@ def build_nse_v5(root, mk):
                        os.path.join(root, "live_state", "v5"), "nifty", "NIFTY 50")]
 
 
+def build_nse_v7(root, mk):
+    return [_portfolio("nse_v7", "V7 Momentum Swing", "nse_v7",
+                       "Top 30 of the NSE top-200 by 6/12-month return / volatility, monthly rebalance, "
+                       "10% stop-loss, half exposure in high-VIX downtrends, Rs 10 lakh paper",
+                       os.path.join(root, "live_state", "v7"), "nifty", "NIFTY 50")]
+
+
 # ─── NSE models ───────────────────────────────────────────────────────────
 
 def build_nse_v33(root, mk):
@@ -473,16 +480,16 @@ def build_nse_lcr(root, mk):
 
 
 BUILDERS = {"research": build_research, "us_v3": build_us_v3, "us_v5": build_us_v5, "us_scr": build_us_scr,
-            "us_lcr": build_us_lcr, "nse_v33": build_nse_v33, "nse_v5": build_nse_v5, "nse_scr": build_nse_scr,
-            "nse_lcr": build_nse_lcr}
+            "us_lcr": build_us_lcr, "nse_v33": build_nse_v33, "nse_v5": build_nse_v5, "nse_v7": build_nse_v7,
+            "nse_scr": build_nse_scr, "nse_lcr": build_nse_lcr}
 
 # a group counts as restored this run when its state is present in the workspace
 PRESENT = {"research": ("live_state/paper_trades_all.csv", "live_state/state.json"),
            "us_v3": ("live_state/us_v3",), "us_v5": ("live_state/us_v5",), "us_scr": ("live_state/us_scr",),
            "us_lcr": ("live_state/us_lcr",), "nse_v33": ("live_state/v33",), "nse_v5": ("live_state/v5",),
-           "nse_scr": ("live_state/nse_scr",), "nse_lcr": ("live_state/nse_lcr",)}
+           "nse_v7": ("live_state/v7",), "nse_scr": ("live_state/nse_scr",), "nse_lcr": ("live_state/nse_lcr",)}
 
-ORDER = ["us_v3", "us_v5", "us_scr", "us_lcr", "nse_v33", "nse_v5", "nse_scr", "nse_lcr", "research"]
+ORDER = ["us_v3", "us_v5", "us_scr", "us_lcr", "nse_v33", "nse_v5", "nse_v7", "nse_scr", "nse_lcr", "research"]
 
 
 # ─── health (workflow runs) ───────────────────────────────────────────────
