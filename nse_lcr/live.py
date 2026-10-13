@@ -190,7 +190,6 @@ def _log_trade(st, p):
 
 
 def run(telegram: bool) -> bool:
-    from live_v33 import _c5, prefetch_today
     now = datetime.now(IST)
     if now.weekday() >= 5:
         return False
@@ -211,6 +210,7 @@ def run(telegram: bool) -> bool:
 
 
 def _scan(st, now, mins, telegram):
+    from live_v33 import _c5, prefetch_today
     caps = universe()
     syms = sorted(set(caps) | {p["symbol"] for p in st["swing"]})
     ctx = daily_ctx(syms, st)
