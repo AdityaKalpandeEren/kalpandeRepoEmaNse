@@ -114,7 +114,7 @@ It softens the 2024–25 momentum crash a little but misses the 2020 rebound (+1
 A long-only momentum book runs at ~16% volatility, so the scaling rarely binds (average scale 0.92 at
 15%); the regime filter and the 10% stop already do this job.
 
-### 3f. Swing round 4: delivery-% tilt — D1 passes, NOT proven (`python -m v7.swing_v7c`)
+### 3f. Swing round 4: delivery-% tilt — D1 passes, NOT proven; live since 2026-10-13 (`python -m v7.swing_v7c`)
 Abnormal delivery % (today's minus the stock's own 60-day average) predicts the next 5 sessions'
 return in every period on the point-in-time top-200: Spearman IC +0.025 / +0.028 / +0.022
 (t 4.5 / 3.6 / 3.1) in 2014–19 / 2020–22 / 2023–26 (top-decile minus bottom-decile ≈ 0.3% per 5 days).
@@ -131,6 +131,17 @@ V5's ML has delivery features, V7 had none. Three tilts of the V7 score, fixed i
 abnormal +0.019 (t 2.1). D1 is the only tilt that beats live V7 in both windows; a modest, plausible
 gain (same drawdown, ~10% more turnover, costs included) but not statistically proven (DSR 0.86 < 0.95).
 
+**Adopted live 2026-10-13 (user decision).** `v7.momentum.d1_score` is the live score; on the full panel it
+equals this script's D1 exactly (623,195 scores, max difference 0) and reproduces the table above. Same
+paper book: the top-45 hold rule means the switch itself trades nothing (the real job, run on a copy of
+the live book with a forced rebalance on 2026-10-13, held all 30); D1 only decides which stocks fill the
+slots that open at each rebalance (the first: 2026-11-13). Backtest 2017-01 → 2026-09: 90 closed positions
+a year vs 83 (stop-loss exits 40 vs 38), 7.9 vs 7.3 new stocks per rebalance. Switching at any of 114
+rebalances bought 5.7 stocks vs 5.5 had V7 continued (mostly ±1, at most 4 more; stops ignored).
+On the 2026-10-12 close a fresh D1 book holds 25 of live V7's 30: out RBLBANK, CHENNPETRO, NYKAA,
+MAHABANK, ZYDUSLIFE; in ADANIPORTS, POWERINDIA, ADANIGREEN, ADANIENSOL, ABCAPITAL (three Adani group
+names, ~10% of the book: the 30% sector cap does not see business groups).
+
 ## 4. Live paper: V7 momentum swing (`python -m v7.live`)
 
 The `v7` job of **NSE Alert Scan** (same cron-job.org trigger, Mon–Fri 09:20–15:30 IST, once a day).
@@ -139,21 +150,25 @@ once-a-day marker, own Telegram tag ("V7 MOMENTUM SWING PAPER"). It reads V5's N
 read-only and never saves over it (`swing/cache` is saved under `nse-v7-data-` only if V5's cache is
 ever missing).
 
-Each session (first run after 09:20): refresh NSE end-of-day files (V5's code) → M30 score of the
-top-200 at the previous close → splits / bonuses applied to holdings (no fake stop on a split) →
-10% stop-loss sells at today's open → every 21 sessions rebalance to the top 30 at today's open with
-delivery costs (regime filter + drawdown breaker scale exposure) → Telegram + state. ₹10 lakh paper,
-no orders sent. The app shows it as "V7 Momentum Swing" (same portfolio view as V5).
+Each session (first run after 09:20): refresh NSE end-of-day files (V5's code) → D1 score (M30 momentum
+80% + delivery trend 20%, since 2026-10-13; see 3f) of the top-200 at the previous close → splits /
+bonuses applied to holdings (no fake stop on a split) → 10% stop-loss sells at today's open → every 21
+sessions rebalance to the top 30 at today's open with delivery costs (regime filter + drawdown breaker
+scale exposure) → Telegram + state. ₹10 lakh paper, no orders sent. The app shows it as "V7 Momentum
+Swing" (same portfolio view as V5).
 
 Dry run on 2026-10-12 (real data, real 9:15 opens): 195 stocks scored in 18 s; regime full exposure
 (NIFTY 7.2% under its 200-day average but India VIX at the 71st percentile); 30 buys, 96% invested.
+D1 dry runs on 2026-10-13 (real data and 9:15 opens, scratch state): the live book with a forced
+rebalance → HOLD 30, no orders; an empty book → 30 buys, 25 of them live V7's.
 
 ## 5. Files
 
 | | |
 |---|---|
 | `v7/index_momentum.py` | 3a |
-| `v7/swing_v7.py`, `v7/momentum.py` | 3b (+ `--sens`); the score is shared with live |
+| `v7/swing_v7.py` | 3b (+ `--sens`) |
+| `v7/momentum.py` | the M30 (3b) and D1 (3f) scores, shared by research and live |
 | `v7/live.py`, `v7/tests/` | 4 (`python -m pytest v7/tests`) |
 | `v7/orb.py`, `v7/fetch_universe.py` | 3c |
 | `v7/swing_v7b.py` | 3d |

@@ -415,8 +415,8 @@ def build_nse_v5(root, mk):
 
 def build_nse_v7(root, mk):
     return [_portfolio("nse_v7", "V7 Momentum Swing", "nse_v7",
-                       "Top 30 of the NSE top-200 by 6/12-month return / volatility, monthly rebalance, "
-                       "10% stop-loss, half exposure in high-VIX downtrends, Rs 10 lakh paper",
+                       "Top 30 of the NSE top-200 by 6/12-month return / volatility (80%) and rising delivery % (20%), "
+                       "monthly rebalance, 10% stop-loss, half exposure in high-VIX downtrends, Rs 10 lakh paper",
                        os.path.join(root, "live_state", "v7"), "nifty", "NIFTY 50")]
 
 
