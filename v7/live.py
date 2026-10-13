@@ -8,8 +8,10 @@ V7 momentum swing - live paper trading (NSE). One step per trading day.
 The model (research: v7/README.md, `python -m v7.swing_v7`):
   universe  point-in-time top-200 NSE stocks by 6-month median traded value
             (ETFs excluded)
-  score     NSE "Nifty200 Momentum 30" style (v7.momentum): 6- and 12-month
-            return / 1-year volatility, z-scored
+  score     D1 (v7.momentum, since 2026-10-13): 0.8 x NSE "Nifty200 Momentum
+            30" style momentum (6- and 12-month return / 1-year volatility,
+            z-scored) + 0.2 x z(delivery trend: 20-session mean delivery %
+            minus the 120-session mean)
   portfolio top 30, inverse-volatility weights (15% name / 30% sector caps),
             rebalanced every 21 sessions at the open; a holding stays while
             ranked within the top 45
@@ -104,14 +106,14 @@ def regime(indices: pd.DataFrame, macro: pd.DataFrame, dates: pd.DatetimeIndex) 
 
 
 def score_previous_close(cfg: dict):
-    """M30 scores of the top-200 universe at the latest session before today,
+    """D1 scores of the top-200 universe at the latest session before today,
     plus that session's per-stock info, closes and corporate-action factors."""
     from swing import config as cfgmod
     from swing.data import panel as panel_mod
     from swing.features.market import index_close
     from swing.research import load_data
     from v5.live import ETF_PATTERN, _clean_old
-    from v7.momentum import m30_score
+    from v7.momentum import d1_score
     data = load_data(cfg, download=False)
     _clean_old(cfgmod.path(cfg, "cache"), data["end"])
     panel = panel_mod.add_universe(data["panel"].drop(columns=["in_universe"]), cfg)
@@ -119,7 +121,7 @@ def score_previous_close(cfg: dict):
     day = panel[panel["date"] == last].set_index("entity")
     etf = day["symbol"].str.contains(ETF_PATTERN.replace("(", "(?:"), regex=True, na=False)   # non-capturing: no pandas warning
     members = day.index[day["in_universe"] & ~etf]
-    s = m30_score(panel, pd.DataFrame({"date": last, "entity": members}))
+    s = d1_score(panel, pd.DataFrame({"date": last, "entity": members}))
     scores = s.set_index("entity")["score"]
     vol = panel[["date", "entity", "ret_cc"]].sort_values(["entity", "date"])
     vol63 = vol.groupby("entity")["ret_cc"].apply(lambda r: r.tail(63).std() if r.notna().sum() >= 31 else float("nan"))
