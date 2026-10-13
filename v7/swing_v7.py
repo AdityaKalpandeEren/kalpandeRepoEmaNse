@@ -93,6 +93,7 @@ def prepare() -> dict:
     v7_blend = blend(ml_raw, m100, 0.5)
 
     return {"base": base, "df": df, "bench": bench, "ctx": ctx, "prices": prices, "info100": info100,
+            "panel": panel, "u200": u200,
             "info200": info200, "m100": m100, "m200": m200, "v5_combo": v5_combo, "v7_blend": v7_blend}
 
 
