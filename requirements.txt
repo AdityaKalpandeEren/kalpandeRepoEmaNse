@@ -1,6 +1,8 @@
 requests
 pandas
 python-dotenv
+# swing/config.py reads swing/config.yaml (NSE LCR swing exits use its delivery costs)
+pyyaml
 # Research engine / ML models / news (paper_trading/research_live.py, backtest/ml/)
 numpy
 joblib

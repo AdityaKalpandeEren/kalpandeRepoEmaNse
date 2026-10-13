@@ -34,6 +34,7 @@ import csv
 import io
 import json
 import os
+import traceback
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -202,6 +203,14 @@ def run(telegram: bool) -> bool:
               "carried_today": []}
     if mins < 9 * 60 + 20 or st.get("reported"):
         return False
+    try:
+        _scan(st, now, mins, telegram)
+    finally:
+        save_state(st)                                                  # even on a crash: alerts already sent must not repeat
+    return True
+
+
+def _scan(st, now, mins, telegram):
     caps = universe()
     syms = sorted(set(caps) | {p["symbol"] for p in st["swing"]})
     ctx = daily_ctx(syms, st)
@@ -261,8 +270,6 @@ def run(telegram: bool) -> bool:
     if mins >= 15 * 60 + 20 and not st.get("reported"):
         eod_report(st, bars, telegram)
         st["reported"] = True
-    save_state(st)
-    return True
 
 
 def manage_today(st, bars, mins, telegram):
@@ -302,32 +309,44 @@ def manage_today(st, bars, mins, telegram):
 
 def manage_swing(st, bars, mins, telegram):
     """Carried positions on later sessions: gap / stop exit, or the day-5 close."""
-    keep = []
+    keep, errors = [], []
     for p in st["swing"]:
-        if p.get("carried_on") == st["date"]:                       # carried today - nothing more today
+        try:
+            if _swing_one(st, p, bars, mins, telegram):
+                keep.append(p)
+        except Exception as e:                                          # keep it, try again next run
+            traceback.print_exc()
+            errors.append(f"{p['symbol']}: {e!r}")
             keep.append(p)
-            continue
-        x = bars.get(p["symbol"])
-        if x is not None and len(x) and p.get("last_session") != st["date"]:
-            p["sessions"] = p.get("sessions", 0) + 1                    # count only days with market data (not holidays)
-            p["last_session"] = st["date"]
-        hit = S.swing_day_exit(x, p["stop"]) if x is not None and len(x) else None
-        if hit is None and p.get("sessions", 0) >= S.SWING_DAYS and mins >= 15 * 60 + 15 and x is not None and len(x):
-            hit = (float(x["close"].iloc[-1]), x.index[-1], "SWING_DAY5")
-        if hit is None:
-            p["last_px"] = float(x["close"].iloc[-1]) if x is not None and len(x) else p.get("last_px")
-            keep.append(p)
-            continue
-        exit_px, ts, outcome = hit
-        net = S.delivery_net(p["entry_raw"], exit_px)
-        p.update(status="CLOSED", exit=round(exit_px, 2), exit_ts=str(ts), outcome=outcome, net_pct=round(net * 100, 2),
-                 pnl=_pnl(p, net))
-        _log_trade(st, p)
-        st["closed_today"].append(p)
-        notify(f"🏛️ NSE LCR SWING EXIT {'✅' if net > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} after "
-               f"{p.get('sessions', 0)} session(s): Rs {p['entry_raw']:.2f} -> Rs {exit_px:.2f} ({net * 100:+.2f}% net, {outcome}) | "
-               f"paper P&L Rs {p['pnl']:+,.0f}", telegram)
     st["swing"] = keep
+    if errors:
+        raise RuntimeError("NSE LCR swing exit failed for " + "; ".join(errors))
+
+
+def _swing_one(st, p, bars, mins, telegram) -> bool:
+    """One carried position: gap / stop exit, or the day-5 close. True = still held."""
+    if p.get("carried_on") == st["date"]:                               # carried today - nothing more today
+        return True
+    x = bars.get(p["symbol"])
+    if x is not None and len(x) and p.get("last_session") != st["date"]:
+        p["sessions"] = p.get("sessions", 0) + 1                        # count only days with market data (not holidays)
+        p["last_session"] = st["date"]
+    hit = S.swing_day_exit(x, p["stop"]) if x is not None and len(x) else None
+    if hit is None and p.get("sessions", 0) >= S.SWING_DAYS and mins >= 15 * 60 + 15 and x is not None and len(x):
+        hit = (float(x["close"].iloc[-1]), x.index[-1], "SWING_DAY5")
+    if hit is None:
+        p["last_px"] = float(x["close"].iloc[-1]) if x is not None and len(x) else p.get("last_px")
+        return True
+    exit_px, ts, outcome = hit
+    net = S.delivery_net(p["entry_raw"], exit_px)
+    p.update(status="CLOSED", exit=round(exit_px, 2), exit_ts=str(ts), outcome=outcome, net_pct=round(net * 100, 2),
+             pnl=_pnl(p, net))
+    _log_trade(st, p)
+    st["closed_today"].append(p)
+    notify(f"🏛️ NSE LCR SWING EXIT {'✅' if net > 0 else '❌'}{'⭐' if p.get('perfect') else ''} {p['symbol']} after "
+           f"{p.get('sessions', 0)} session(s): Rs {p['entry_raw']:.2f} -> Rs {exit_px:.2f} ({net * 100:+.2f}% net, {outcome}) | "
+           f"paper P&L Rs {p['pnl']:+,.0f}", telegram)
+    return False
 
 
 def eod_report(st, bars, telegram):
@@ -375,6 +394,9 @@ def main():
     changed = False
     try:
         changed = run(not a.no_telegram)
+    except Exception:
+        changed = True                                                  # run() saved its state - keep it (no repeat alerts)
+        raise
     finally:
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
