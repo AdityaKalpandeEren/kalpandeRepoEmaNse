@@ -16,6 +16,7 @@ workflow's cron is scoped to NSE market hours, but this script also
 checks the time itself as a safety net (e.g. if you trigger it
 manually outside market hours).
 """
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -89,6 +90,48 @@ def _research_after_close(now):
             rp.finish_day(_fetcher(config.UPSTOX_ACCESS_TOKEN))
         finally:
             rp.end()
+
+
+def _research_wide(research, access_token: str, done: set):
+    """config.LIVE_RESEARCH_WIDE_STRATEGIES (the ML filters) also scan NSE's mega / large /
+    mid caps that aren't in this run's list: candles fetched in parallel, the stocks
+    evaluated longest ago first, within config.LIVE_RESEARCH_WIDE_BUDGET_S - the rest are
+    first in line next run (no candle is skipped, the research pass catches up)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from paper_trading.research_live import wide_universe
+    if research.state.get("report_sent"):
+        return                      # research day over (15:20 report sent): no new trades
+    now = research.now
+    if (now.hour * 60 + now.minute) - (9 * 60 + 15) < (config.MIN_WARMUP_CANDLES + 1) * config.CANDLE_INTERVAL_MINUTES:
+        return                      # no research signal can fire before the warm-up candles exist
+    t0 = time.time()
+    tags = wide_universe()
+    marks = research.state.get("last_ts_wide", {})
+    extra = sorted((s for s in tags if s not in done), key=lambda s: marks.get(s) or "")
+    if not extra:
+        return
+
+    def fetch(sym):
+        try:
+            return sym, get_intraday_candles(get_instrument_key(sym), config.CANDLE_INTERVAL_MINUTES, access_token)
+        except Exception:
+            return sym, None
+
+    with ThreadPoolExecutor(config.LIVE_RESEARCH_WIDE_WORKERS) as ex:
+        frames = list(ex.map(fetch, extra))
+    t_fetch, n = time.time() - t0, 0
+    for sym, df in frames:
+        if time.time() - t0 > config.LIVE_RESEARCH_WIDE_BUDGET_S:
+            break
+        if df is None or df.empty:
+            continue
+        try:
+            research.process_symbol(sym, df, wide_tag=tags[sym])
+            n += 1
+        except Exception as e:
+            print(f"Research wide-scan error on {sym}: {e!r}")
+    print(f"Research wide scan ({', '.join(config.LIVE_RESEARCH_WIDE_STRATEGIES)}): {n}/{len(extra)} more NSE "
+          f"stocks (universe {len(tags)}), candles {t_fetch:.0f} s, total {time.time() - t0:.0f} s", flush=True)
 
 
 def main():
@@ -165,6 +208,12 @@ def main():
                 research.process_symbol(symbol, df)
             except Exception as e:
                 print(f"Research error on {symbol}: {e!r}")
+
+    if research is not None and config.LIVE_RESEARCH_WIDE_STRATEGIES:
+        try:
+            _research_wide(research, access_token, set(combined))
+        except Exception as e:
+            print(f"Research wide-scan error: {e!r}")
 
     if research is not None:
         try:

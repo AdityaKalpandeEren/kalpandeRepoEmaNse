@@ -374,6 +374,16 @@ TELEGRAM_EXTRA_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_EXTRA_CHAT_IDS
 LIVE_STATE_DIR = os.getenv("LIVE_STATE_DIR", "live_state")
 LIVE_ALERT_MAX_AGE_MIN = 15
 LIVE_RESEARCH_V2_LIVE_CONTEXT = os.getenv("LIVE_RESEARCH_V2_LIVE_CONTEXT", "true").lower() == "true"
+# Wide scan (added 2026-10-13, user): the ML filters also scan NSE's mega / large / mid
+# caps - every NIFTY 50 / NIFTY 100 / Midcap 150 stock plus off-index companies with
+# market cap >= Rs 20,000 cr (the NSE LCR universe, paper_trading/research_live.py
+# wide_universe) - on top of watchlist.txt + the near-breakout shortlist that every
+# research strategy scans. The other research strategies keep the original list.
+# Their alerts say "Wide scan: <size> stock". "" turns the wide scan off.
+LIVE_RESEARCH_WIDE_STRATEGIES = [s.strip() for s in os.getenv(
+    "LIVE_RESEARCH_WIDE_STRATEGIES", "L_ML_META,L_ML_META_V2,L_ML_META_V3").split(",") if s.strip()]
+LIVE_RESEARCH_WIDE_WORKERS = 6          # parallel candle downloads
+LIVE_RESEARCH_WIDE_BUDGET_S = 180       # per run; stocks not reached are first in line next run
 # EOD report goes out on the first run at/after this time (IST). Research
 # trades are all out by the 15:15 square-off (the last research candle
 # closes then), so 15:20 is final - and it lands inside the existing

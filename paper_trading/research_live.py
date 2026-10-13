@@ -32,6 +32,11 @@ comparing to backtests if "a trade" means the same thing in both:
   - scan_once.py's symbol list changes during the day (the dynamic
     near-breakout shortlist), so open trades on symbols that dropped out
     of the list are still fetched and tracked every run (catch_up_open)
+  - wide scan (config.LIVE_RESEARCH_WIDE_STRATEGIES, the ML filters by
+    default): those strategies also scan NSE's mega / large / mid caps
+    (wide_universe) that aren't in scan_once's list; they keep their own
+    per-stock mark (last_ts_wide) so no candle is evaluated twice, and
+    their alerts say "Wide scan: <size> stock"
 
 One deliberate live-only difference: L_ML_META_V2 runs with its live
 context, which includes the news overlay (config.ML_V2_NEWS_ENABLED) -
@@ -136,7 +141,7 @@ def _path(name: str) -> str:
 
 
 def _new_state(day: str) -> dict:
-    return {"date": day, "last_ts": {}, "counts": {}, "last_fired": {},
+    return {"date": day, "last_ts": {}, "last_ts_wide": {}, "counts": {}, "last_fired": {},
             "trades": [], "report_sent": False}
 
 
@@ -195,6 +200,30 @@ def _selected_models() -> dict:
             from strategy.market_context import set_live_mode
             set_live_mode(config.LIVE_RESEARCH_V2_LIVE_CONTEXT)
     return _models
+
+
+def wide_universe() -> dict:
+    """symbol -> size bucket ('MEGA', 'LARGE', 'MID', 'MID · off-index', ...) for the wide
+    scan of config.LIVE_RESEARCH_WIDE_STRATEGIES: the NSE LCR universe - NIFTY 50 / NIFTY
+    100 / Midcap 150 constituents plus off-index stocks with market cap >= nse_lcr's
+    MIN_MCAP_CR. Built once a day and kept in config.LIVE_STATE_DIR (cached by the
+    workflow between runs); a short list (NSE / Yahoo hiccup) is used but not kept."""
+    day = datetime.now(MARKET_TZ).strftime("%Y%m%d")
+    path = _path(f"wide_universe_{day}.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        pass
+    from nse_lcr.live import universe
+    tags = universe()
+    if len(tags) >= 100:
+        for n in os.listdir(config.LIVE_STATE_DIR):
+            if n.startswith("wide_universe_") and n != os.path.basename(path):
+                os.remove(os.path.join(config.LIVE_STATE_DIR, n))
+        with open(path, "w") as f:
+            json.dump(tags, f)
+    return tags
 
 
 def _enrich(day_df: pd.DataFrame) -> pd.DataFrame:
@@ -267,8 +296,10 @@ class ResearchPass:
 
     # ---------- per symbol ----------
 
-    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True):
-        """raw_df = today's candles as scan_once already fetched them."""
+    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True, wide_tag: str = None):
+        """raw_df = today's candles as scan_once already fetched them. wide_tag: set (to the
+        stock's size bucket) for a stock only the wide scan covers - then only
+        config.LIVE_RESEARCH_WIDE_STRATEGIES look at it."""
         if self.state is None:
             return
         self.processed.add(symbol)
@@ -277,17 +308,31 @@ class ResearchPass:
             return
         self._update_trades(symbol, df)
         if allow_new:
-            self._scan_new_candles(symbol, df)
+            self._scan_new_candles(symbol, df, wide_tag)
 
-    def _scan_new_candles(self, symbol: str, df: pd.DataFrame):
+    def _scan_new_candles(self, symbol: str, df: pd.DataFrame, wide_tag: str = None):
+        """Evaluate the candles each strategy hasn't seen yet. The wide-scan strategies keep
+        their own per-stock mark (last_ts_wide), so a stock moving between the watchlist scan
+        and the wide scan is never evaluated twice by them; the others use last_ts."""
         from strategy.strategies import evaluate_all
-        models = _selected_models()
-        if not models or len(df) < config.MIN_WARMUP_CANDLES + 1:
+        selected = _selected_models()
+        wide = {k: v for k, v in selected.items() if k in config.LIVE_RESEARCH_WIDE_STRATEGIES}
+        base = {} if wide_tag else {k: v for k, v in selected.items() if k not in wide}
+        if not (base or wide) or len(df) < config.MIN_WARMUP_CANDLES + 1:
             return
-        last_ts = self.state["last_ts"].get(symbol)
-        last_ts = pd.Timestamp(last_ts) if last_ts else None
-        todo = [i for i in range(config.MIN_WARMUP_CANDLES, len(df))
-                if last_ts is None or df["timestamp"].iat[i] > last_ts]
+        marks = self.state.setdefault("last_ts_wide", {})
+        base_ts = self.state["last_ts"].get(symbol)
+        wide_ts = marks.get(symbol) or base_ts          # no wide mark yet: the full scan covered them up to last_ts
+        base_ts = pd.Timestamp(base_ts) if base_ts else None
+        wide_ts = pd.Timestamp(wide_ts) if wide_ts else None
+
+        def models_for(ts) -> dict:
+            m = dict(base) if base and (base_ts is None or ts > base_ts) else {}
+            if wide and (wide_ts is None or ts > wide_ts):
+                m.update(wide)
+            return m
+
+        todo = [i for i in range(config.MIN_WARMUP_CANDLES, len(df)) if models_for(df["timestamp"].iat[i])]
         if not todo:
             return
         enriched = _enrich(df)
@@ -295,7 +340,7 @@ class ResearchPass:
         for i in todo:
             sub = enriched.iloc[: i + 1]
             try:
-                signals = evaluate_all(symbol, sub, models, directions)
+                signals = evaluate_all(symbol, sub, models_for(df["timestamp"].iat[i]), directions)
             except Exception as e:
                 print(f"[research-live] {symbol} evaluate error: {e!r}")
                 signals = []
@@ -311,12 +356,14 @@ class ResearchPass:
                     "id": f"{key}|{sig.candle_time}",
                     "symbol": symbol, "strategy": sig.strategy, "direction": sig.direction,
                     "regime": sig.regime, "trend_strength": sig.trend_strength,
-                    "score": sig.score, "reason": sig.reason,
+                    "score": sig.score, "reason": sig.reason + (f" [wide scan: {wide_tag}]" if wide_tag else ""),
                     "exit_mode": getattr(sig, "exit_mode", "standard"),
                     "signal_time": str(sig.candle_time), "signal_price": sig.entry,
                     "stop_loss": sig.stop_loss, "target": sig.target,
                     "status": "PENDING",
                 }
+                if wide_tag:
+                    trade["scope"] = wide_tag
                 self.state["trades"].append(trade)
                 age_min = (self.now - pd.Timestamp(sig.candle_time).to_pydatetime()).total_seconds() / 60
                 if age_min <= config.LIVE_ALERT_MAX_AGE_MIN + config.CANDLE_INTERVAL_MINUTES:
@@ -324,7 +371,11 @@ class ResearchPass:
                 else:
                     print(f"[research-live] {symbol} {sig.strategy}: backlog signal from "
                           f"{sig.candle_time} paper-traded but not alerted (stale)")
-        self.state["last_ts"][symbol] = str(df["timestamp"].iat[todo[-1]])
+        last = str(df["timestamp"].iat[todo[-1]])
+        if not wide_tag:
+            self.state["last_ts"][symbol] = last
+        if wide:
+            marks[symbol] = last
 
     def _update_trades(self, symbol: str, df: pd.DataFrame, session_over: bool = False):
         ts_index = {str(t): k for k, t in enumerate(df["timestamp"])}
@@ -408,7 +459,9 @@ class ResearchPass:
                 if df is None or df.empty:
                     continue
                 n_alerts = len(self.new_alerts)
-                self._scan_new_candles(symbol, df)
+                wide_tag = None if symbol in self.state["last_ts"] else next(
+                    (t["scope"] for t in self.state["trades"] if t["symbol"] == symbol and t.get("scope")), "wide")
+                self._scan_new_candles(symbol, df, wide_tag)
                 del self.new_alerts[n_alerts:]
                 self._update_trades(symbol, df, session_over=True)
             except Exception as e:
@@ -494,7 +547,7 @@ def _rs(x) -> str:
 def _why(t: dict) -> str:
     """The signal's reason string, rewritten for a human."""
     import re
-    reason, strat = t.get("reason") or "", t["strategy"]
+    reason, strat = re.sub(r" \[wide scan: [^\]]*\]$", "", t.get("reason") or ""), t["strategy"]
     if strat in ("SCORE_ENGINE", "SCORE_ENGINE_LC"):
         comps = dict(re.findall(r"(\w+)=([-\d.]+)", reason))
         parts = " · ".join(f"{k} {float(v):.2f}" for k, v in comps.items())
@@ -534,6 +587,7 @@ def _format_entries(trades: list) -> str:
             f"🛑 Stop    {_rs(t['stop_loss'])} ({stop_pct:+.2f}%)\n"
             f"🎯 Target  {_rs(t['target'])} ({tgt_pct:+.2f}%) · {rr:.1f}R\n"
             f"📊 Why: {_why(t)}\n"
+            + (f"🔭 Wide scan: {t['scope']} stock, not on the watchlist\n" if t.get("scope") else "") +
             f"🧭 Market: {t['regime'].replace('_', ' ')}\n"
             f"⏹ Exit: {exits}")
     return "\n".join(blocks)
