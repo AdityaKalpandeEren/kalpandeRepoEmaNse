@@ -468,6 +468,8 @@ _STRATEGY_INFO = {
     "K_RSI2_REVERSION": "RSI(2) dip-buy - sharp dip inside an uptrend",
     "J_VWAP_BAND_REVERSION": "VWAP band bounce - stretched far below VWAP, turning up",
     "SCORE_ENGINE": "Setup score - trend, momentum, volume, VWAP, volatility, price action",
+    "SCORE_ENGINE_LC": "LC (loss-cut) setup score - only scores 65+, stop 3x ATR",
+    "J_VWAP_LC": "LC (loss-cut) VWAP band bounce - morning only (fill before 12:00), stop 3x ATR",
     "L_ML_META": "ML filter V1 - model picked the best of 12 setups",
     "L_ML_META_V2": "ML filter V2 - best setup + market context + news check",
     "L_ML_META_V3": "ML filter V3 - best setup + sectors, macro and catalysts",
@@ -493,10 +495,11 @@ def _why(t: dict) -> str:
     """The signal's reason string, rewritten for a human."""
     import re
     reason, strat = t.get("reason") or "", t["strategy"]
-    if strat == "SCORE_ENGINE":
+    if strat in ("SCORE_ENGINE", "SCORE_ENGINE_LC"):
         comps = dict(re.findall(r"(\w+)=([-\d.]+)", reason))
         parts = " · ".join(f"{k} {float(v):.2f}" for k, v in comps.items())
-        return f"Score {t.get('score', 0):.0f}/100 (needs 55) - {parts}"
+        need = config.SCORE_LC_MIN_TOTAL if strat == "SCORE_ENGINE_LC" else config.SCORE_MIN_TOTAL
+        return f"Score {t.get('score', 0):.0f}/100 (needs {need:.0f}) - {parts}"
     m = re.match(r"meta(?:-v\d)?[^:]*: (\w+) p=([\d.]+)(?: \(bar ([\d.]+)\))?(?: \| (.*))?", reason)
     if m:
         setup, p, bar, extra = m.groups()
@@ -506,7 +509,7 @@ def _why(t: dict) -> str:
     if strat == "K_RSI2_REVERSION":
         return reason.replace(f"RSI{config.RSI2_PERIOD}=", "RSI(2) ").replace(" oversold above EMA", " oversold, above EMA ") \
             + ", green candle"
-    if strat == "J_VWAP_BAND_REVERSION":
+    if strat in ("J_VWAP_BAND_REVERSION", "J_VWAP_LC"):
         return reason.replace("vwap_z", "VWAP z-score")
     return reason[:200]
 

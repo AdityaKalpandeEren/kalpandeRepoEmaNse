@@ -138,6 +138,17 @@ SCORE_VWAP_IDEAL_Z = 1.0
 SCORE_VWAP_FADE_Z = 2.5
 SCORE_ATR_IDEAL = 0.5
 
+# --- Loss-cut variants (SCORE_ENGINE_LC, J_VWAP_LC - added 2026-10-13) ---
+# Same entries as SCORE_ENGINE / J_VWAP_BAND_REVERSION, run alongside the
+# originals (which are unchanged). Multi-year replay, 48 large caps,
+# 2023-01..2026-09: the originals lose every year (gross ~0 / -0.05R a trade,
+# costs 0.2-0.3R); wider stops make costs a smaller part of 1R, the filters
+# drop the worst trades. Replay of this code: 15% (SE, 12.7 trades/day) and 3% (VWAP,
+# 2.1/day) of the originals' loss - still negative, these cut losses, not an edge.
+LC_ATR_STOP_MULT = 3.0               # stop 3 x ATR (originals: ATR_STOP_MULT 1.5)
+SCORE_LC_MIN_TOTAL = 65.0            # Score Engine LC needs 65 (original: SCORE_MIN_TOTAL 55)
+VWAP_LC_LAST_FILL_MINUTES = 165      # VWAP LC: fill (next candle open) before 12:00 IST = 165 min after 9:15
+
 # --- Research backtest mechanics ---
 # NSE DIFFERENCE: the US bot scans from 4:00 AM pre-market, so its 25-
 # candle warm-up is long over by the 9:30 open. NSE has no extended
@@ -344,7 +355,8 @@ ML_V2_EXCLUDE_FEATURES = [
 LIVE_RESEARCH_ENABLED = os.getenv("LIVE_RESEARCH_ENABLED", "true").lower() == "true"
 LIVE_RESEARCH_STRATEGIES = [s.strip() for s in os.getenv(
     "LIVE_RESEARCH_STRATEGIES",
-    "K_RSI2_REVERSION,SCORE_ENGINE,L_ML_META,L_ML_META_V2,L_ML_META_V3,J_VWAP_BAND_REVERSION",
+    "K_RSI2_REVERSION,SCORE_ENGINE,L_ML_META,L_ML_META_V2,L_ML_META_V3,J_VWAP_BAND_REVERSION,"
+    "SCORE_ENGINE_LC,J_VWAP_LC",
 ).split(",") if s.strip()]
 # Strategies still paper-traded and shown in the EOD report, but with no
 # Telegram entry/exit alerts. SCORE_ENGINE muted 2026-10-01 (monitor only);
