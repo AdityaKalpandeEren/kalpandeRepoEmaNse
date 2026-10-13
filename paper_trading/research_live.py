@@ -32,6 +32,13 @@ comparing to backtests if "a trade" means the same thing in both:
   - scan_once.py's symbol list changes during the day (the dynamic
     near-breakout shortlist), so open trades on symbols that dropped out
     of the list are still fetched and tracked every run (catch_up_open)
+  - wide scan (config.LIVE_RESEARCH_WIDE_STRATEGIES, the ML filters by
+    default): those strategies also scan NSE's mega / large / mid caps
+    (wide_universe, re-screened during the day) and today's trending stocks
+    of any size (trending_now) that aren't in scan_once's list; they keep
+    their own per-stock mark (last_ts_wide) so no candle is evaluated twice,
+    stocks added during the day start from the candle they appear on, and
+    their alerts say "Wide scan: <tag>"
 
 One deliberate live-only difference: L_ML_META_V2 runs with its live
 context, which includes the news overlay (config.ML_V2_NEWS_ENABLED) -
@@ -136,7 +143,7 @@ def _path(name: str) -> str:
 
 
 def _new_state(day: str) -> dict:
-    return {"date": day, "last_ts": {}, "counts": {}, "last_fired": {},
+    return {"date": day, "last_ts": {}, "last_ts_wide": {}, "counts": {}, "last_fired": {},
             "trades": [], "report_sent": False}
 
 
@@ -195,6 +202,97 @@ def _selected_models() -> dict:
             from strategy.market_context import set_live_mode
             set_live_mode(config.LIVE_RESEARCH_V2_LIVE_CONTEXT)
     return _models
+
+
+def wide_universe() -> tuple:
+    """(symbol -> tag, symbols added during the day) for the wide scan of
+    config.LIVE_RESEARCH_WIDE_STRATEGIES. Base list, built once a day: the NSE LCR universe -
+    NIFTY 50 / NIFTY 100 / Midcap 150 constituents plus off-index stocks with market cap >=
+    nse_lcr's MIN_MCAP_CR (tag = size bucket, e.g. 'MID · off-index'). Every
+    config.LIVE_RESEARCH_WIDE_REFRESH_MIN the off-index part is re-screened on Yahoo's
+    intraday market cap, so a stock crossing Rs 20,000 cr joins the same day; nothing leaves
+    during the day. Kept in config.LIVE_STATE_DIR (cached by the workflow between runs); a
+    short base list (NSE / Yahoo hiccup) is used but not kept."""
+    import time as _time
+    now = datetime.now(MARKET_TZ)
+    path = _path(f"wide_universe_{now:%Y%m%d}.json")
+    try:
+        with open(path) as f:
+            u = json.load(f)
+    except Exception:
+        from nse_lcr.live import universe
+        u = {"base": universe(), "added": {}, "refreshed": _time.time()}
+        if len(u["base"]) < 100:
+            return dict(u["base"]), set()
+        for n in os.listdir(config.LIVE_STATE_DIR):
+            if n.startswith("wide_universe_") and n != os.path.basename(path):
+                os.remove(os.path.join(config.LIVE_STATE_DIR, n))
+    else:
+        if _time.time() - u.get("refreshed", 0) < config.LIVE_RESEARCH_WIDE_REFRESH_MIN * 60:
+            return {**u["base"], **u["added"]}, set(u["added"])
+        from data.instruments import get_instrument_key
+        from nse_lcr.live import off_index_large_caps
+        u["refreshed"] = _time.time()
+        try:
+            for sym, (bucket, _mc) in off_index_large_caps().items():
+                if sym in u["base"] or sym in u["added"]:
+                    continue
+                try:
+                    get_instrument_key(sym)
+                except Exception:
+                    continue
+                u["added"][sym] = f"{bucket} · off-index · joined {now:%H:%M}"
+        except Exception as e:
+            print(f"[research-live] wide universe refresh failed: {e!r}")
+    with open(path, "w") as f:
+        json.dump(u, f)
+    return {**u["base"], **u["added"]}, set(u["added"])
+
+
+def _eq_series() -> set:
+    """NSE EQ-series symbols (only these can be bought and squared off intraday; BE / BZ are
+    trade-for-trade), once a day, kept in config.LIVE_STATE_DIR. Empty if NSE is unreachable."""
+    path = _path(f"eq_series_{datetime.now(MARKET_TZ):%Y%m%d}.json")
+    try:
+        with open(path) as f:
+            return set(json.load(f))
+    except Exception:
+        pass
+    from nse_scr.data import eq_series
+    eq = eq_series()
+    if eq:
+        for n in os.listdir(config.LIVE_STATE_DIR):
+            if n.startswith("eq_series_") and n != os.path.basename(path):
+                os.remove(os.path.join(config.LIVE_STATE_DIR, n))
+        with open(path, "w") as f:
+            json.dump(sorted(eq), f)
+    return eq
+
+
+def trending_now(sizes: dict) -> dict:
+    """symbol -> tag for "trending now" stocks: on NSE's live lists (nse_scr.data.watchlist -
+    volume shockers, top gainers, most active; not ones that are only on the losers list), up
+    >= config.LIVE_RESEARCH_TRENDING_MIN_PCT today, >= SCR's MIN_TURNOVER traded, price >=
+    SCR's MIN_PRICE, EQ series; biggest gainers first, at most
+    config.LIVE_RESEARCH_TRENDING_MAX. sizes = wide-universe tags (anything else is a small
+    cap: under Rs 20,000 cr and in no index). {} when NSE is unreachable."""
+    from nse_scr import data as scr_data
+    from nse_scr import strategy as scr
+    w = scr_data.watchlist()
+    if w.empty or "pct" not in w:
+        return {}
+    w = w[w["sources"].fillna("").map(lambda v: bool(set(v.split("+")) - {"loser", ""}))]
+    w = w[(w["pct"] >= config.LIVE_RESEARCH_TRENDING_MIN_PCT) & (w["turnover"] >= scr.MIN_TURNOVER)
+          & (w["ltp"] >= scr.MIN_PRICE)]
+    eq = _eq_series()
+    if eq:
+        w = w[w["symbol"].isin(eq)]
+    out = {}
+    for r in w.sort_values("pct", ascending=False).head(config.LIVE_RESEARCH_TRENDING_MAX).itertuples():
+        vx = getattr(r, "vol_x_week", None)
+        vol = f", volume {vx:.1f}x" if vx is not None and pd.notna(vx) and vx > 0 else ""
+        out[r.symbol] = f"{sizes.get(r.symbol, 'SMALL')} · trending {r.pct:+.1f}%{vol}"
+    return out
 
 
 def _enrich(day_df: pd.DataFrame) -> pd.DataFrame:
@@ -267,8 +365,15 @@ class ResearchPass:
 
     # ---------- per symbol ----------
 
-    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True):
-        """raw_df = today's candles as scan_once already fetched them."""
+    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True, wide_tag: str = None,
+                       join_now: bool = False):
+        """raw_df = today's candles as scan_once already fetched them. wide_tag: set (to the
+        stock's tag) for a stock only the wide scan covers - then only
+        config.LIVE_RESEARCH_WIDE_STRATEGIES look at it. join_now: the stock was added during
+        the day (trending now / newly >= Rs 20,000 cr) - it is evaluated from the candle it is
+        first seen on (and again from "now" after a gap of more than
+        config.LIVE_RESEARCH_JOIN_GAP_CANDLES), never on earlier candles: they were picked
+        knowing the stock would trend, so paper-trading them would flatter the results."""
         if self.state is None:
             return
         self.processed.add(symbol)
@@ -276,18 +381,38 @@ class ResearchPass:
         if df is None or df.empty:
             return
         self._update_trades(symbol, df)
+        if wide_tag and join_now and len(df) >= 2:
+            marks = self.state.setdefault("last_ts_wide", {})
+            mark = marks.get(symbol) or self.state["last_ts"].get(symbol)
+            gap = pd.Timedelta(minutes=config.CANDLE_INTERVAL_MINUTES * config.LIVE_RESEARCH_JOIN_GAP_CANDLES)
+            if mark is None or pd.Timestamp(mark) < df["timestamp"].iat[-1] - gap:
+                marks[symbol] = str(df["timestamp"].iat[-2])          # from the newest candle on
         if allow_new:
-            self._scan_new_candles(symbol, df)
+            self._scan_new_candles(symbol, df, wide_tag)
 
-    def _scan_new_candles(self, symbol: str, df: pd.DataFrame):
+    def _scan_new_candles(self, symbol: str, df: pd.DataFrame, wide_tag: str = None):
+        """Evaluate the candles each strategy hasn't seen yet. The wide-scan strategies keep
+        their own per-stock mark (last_ts_wide), so a stock moving between the watchlist scan
+        and the wide scan is never evaluated twice by them; the others use last_ts."""
         from strategy.strategies import evaluate_all
-        models = _selected_models()
-        if not models or len(df) < config.MIN_WARMUP_CANDLES + 1:
+        selected = _selected_models()
+        wide = {k: v for k, v in selected.items() if k in config.LIVE_RESEARCH_WIDE_STRATEGIES}
+        base = {} if wide_tag else {k: v for k, v in selected.items() if k not in wide}
+        if not (base or wide) or len(df) < config.MIN_WARMUP_CANDLES + 1:
             return
-        last_ts = self.state["last_ts"].get(symbol)
-        last_ts = pd.Timestamp(last_ts) if last_ts else None
-        todo = [i for i in range(config.MIN_WARMUP_CANDLES, len(df))
-                if last_ts is None or df["timestamp"].iat[i] > last_ts]
+        marks = self.state.setdefault("last_ts_wide", {})
+        base_ts = self.state["last_ts"].get(symbol)
+        wide_ts = marks.get(symbol) or base_ts          # no wide mark yet: the full scan covered them up to last_ts
+        base_ts = pd.Timestamp(base_ts) if base_ts else None
+        wide_ts = pd.Timestamp(wide_ts) if wide_ts else None
+
+        def models_for(ts) -> dict:
+            m = dict(base) if base and (base_ts is None or ts > base_ts) else {}
+            if wide and (wide_ts is None or ts > wide_ts):
+                m.update(wide)
+            return m
+
+        todo = [i for i in range(config.MIN_WARMUP_CANDLES, len(df)) if models_for(df["timestamp"].iat[i])]
         if not todo:
             return
         enriched = _enrich(df)
@@ -295,7 +420,7 @@ class ResearchPass:
         for i in todo:
             sub = enriched.iloc[: i + 1]
             try:
-                signals = evaluate_all(symbol, sub, models, directions)
+                signals = evaluate_all(symbol, sub, models_for(df["timestamp"].iat[i]), directions)
             except Exception as e:
                 print(f"[research-live] {symbol} evaluate error: {e!r}")
                 signals = []
@@ -311,12 +436,14 @@ class ResearchPass:
                     "id": f"{key}|{sig.candle_time}",
                     "symbol": symbol, "strategy": sig.strategy, "direction": sig.direction,
                     "regime": sig.regime, "trend_strength": sig.trend_strength,
-                    "score": sig.score, "reason": sig.reason,
+                    "score": sig.score, "reason": sig.reason + (f" [wide scan: {wide_tag}]" if wide_tag else ""),
                     "exit_mode": getattr(sig, "exit_mode", "standard"),
                     "signal_time": str(sig.candle_time), "signal_price": sig.entry,
                     "stop_loss": sig.stop_loss, "target": sig.target,
                     "status": "PENDING",
                 }
+                if wide_tag:
+                    trade["scope"] = wide_tag
                 self.state["trades"].append(trade)
                 age_min = (self.now - pd.Timestamp(sig.candle_time).to_pydatetime()).total_seconds() / 60
                 if age_min <= config.LIVE_ALERT_MAX_AGE_MIN + config.CANDLE_INTERVAL_MINUTES:
@@ -324,7 +451,11 @@ class ResearchPass:
                 else:
                     print(f"[research-live] {symbol} {sig.strategy}: backlog signal from "
                           f"{sig.candle_time} paper-traded but not alerted (stale)")
-        self.state["last_ts"][symbol] = str(df["timestamp"].iat[todo[-1]])
+        last = str(df["timestamp"].iat[todo[-1]])
+        if not wide_tag:
+            self.state["last_ts"][symbol] = last
+        if wide:
+            marks[symbol] = last
 
     def _update_trades(self, symbol: str, df: pd.DataFrame, session_over: bool = False):
         ts_index = {str(t): k for k, t in enumerate(df["timestamp"])}
@@ -408,7 +539,9 @@ class ResearchPass:
                 if df is None or df.empty:
                     continue
                 n_alerts = len(self.new_alerts)
-                self._scan_new_candles(symbol, df)
+                wide_tag = None if symbol in self.state["last_ts"] else next(
+                    (t["scope"] for t in self.state["trades"] if t["symbol"] == symbol and t.get("scope")), "wide")
+                self._scan_new_candles(symbol, df, wide_tag)
                 del self.new_alerts[n_alerts:]
                 self._update_trades(symbol, df, session_over=True)
             except Exception as e:
@@ -494,7 +627,7 @@ def _rs(x) -> str:
 def _why(t: dict) -> str:
     """The signal's reason string, rewritten for a human."""
     import re
-    reason, strat = t.get("reason") or "", t["strategy"]
+    reason, strat = re.sub(r" \[wide scan: [^\]]*\]$", "", t.get("reason") or ""), t["strategy"]
     if strat in ("SCORE_ENGINE", "SCORE_ENGINE_LC"):
         comps = dict(re.findall(r"(\w+)=([-\d.]+)", reason))
         parts = " · ".join(f"{k} {float(v):.2f}" for k, v in comps.items())
@@ -534,6 +667,7 @@ def _format_entries(trades: list) -> str:
             f"🛑 Stop    {_rs(t['stop_loss'])} ({stop_pct:+.2f}%)\n"
             f"🎯 Target  {_rs(t['target'])} ({tgt_pct:+.2f}%) · {rr:.1f}R\n"
             f"📊 Why: {_why(t)}\n"
+            + (f"🔭 Wide scan: {t['scope']} · not on the watchlist\n" if t.get("scope") else "") +
             f"🧭 Market: {t['regime'].replace('_', ' ')}\n"
             f"⏹ Exit: {exits}")
     return "\n".join(blocks)
