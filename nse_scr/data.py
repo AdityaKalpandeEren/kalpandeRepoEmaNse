@@ -75,6 +75,8 @@ def watchlist() -> pd.DataFrame:
     if not parts:
         return pd.DataFrame(columns=["symbol"])
     w = pd.concat(parts, ignore_index=True).dropna(subset=["symbol"])
+    if "vol_x_week" not in w:
+        w["vol_x_week"] = float("nan")      # volume-shocker feed empty this run (crashed SCR 2026-10-13 13:58)
     src = w.groupby("symbol")["source"].agg(lambda s: "+".join(sorted(set(s))))
     w = w.sort_values("vol_x_week", ascending=False, na_position="last").drop_duplicates("symbol")
     w["sources"] = w["symbol"].map(src)

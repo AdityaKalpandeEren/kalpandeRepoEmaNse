@@ -34,9 +34,11 @@ comparing to backtests if "a trade" means the same thing in both:
     of the list are still fetched and tracked every run (catch_up_open)
   - wide scan (config.LIVE_RESEARCH_WIDE_STRATEGIES, the ML filters by
     default): those strategies also scan NSE's mega / large / mid caps
-    (wide_universe) that aren't in scan_once's list; they keep their own
-    per-stock mark (last_ts_wide) so no candle is evaluated twice, and
-    their alerts say "Wide scan: <size> stock"
+    (wide_universe, re-screened during the day) and today's trending stocks
+    of any size (trending_now) that aren't in scan_once's list; they keep
+    their own per-stock mark (last_ts_wide) so no candle is evaluated twice,
+    stocks added during the day start from the candle they appear on, and
+    their alerts say "Wide scan: <tag>"
 
 One deliberate live-only difference: L_ML_META_V2 runs with its live
 context, which includes the news overlay (config.ML_V2_NEWS_ENABLED) -
@@ -202,28 +204,95 @@ def _selected_models() -> dict:
     return _models
 
 
-def wide_universe() -> dict:
-    """symbol -> size bucket ('MEGA', 'LARGE', 'MID', 'MID · off-index', ...) for the wide
-    scan of config.LIVE_RESEARCH_WIDE_STRATEGIES: the NSE LCR universe - NIFTY 50 / NIFTY
-    100 / Midcap 150 constituents plus off-index stocks with market cap >= nse_lcr's
-    MIN_MCAP_CR. Built once a day and kept in config.LIVE_STATE_DIR (cached by the
-    workflow between runs); a short list (NSE / Yahoo hiccup) is used but not kept."""
-    day = datetime.now(MARKET_TZ).strftime("%Y%m%d")
-    path = _path(f"wide_universe_{day}.json")
+def wide_universe() -> tuple:
+    """(symbol -> tag, symbols added during the day) for the wide scan of
+    config.LIVE_RESEARCH_WIDE_STRATEGIES. Base list, built once a day: the NSE LCR universe -
+    NIFTY 50 / NIFTY 100 / Midcap 150 constituents plus off-index stocks with market cap >=
+    nse_lcr's MIN_MCAP_CR (tag = size bucket, e.g. 'MID · off-index'). Every
+    config.LIVE_RESEARCH_WIDE_REFRESH_MIN the off-index part is re-screened on Yahoo's
+    intraday market cap, so a stock crossing Rs 20,000 cr joins the same day; nothing leaves
+    during the day. Kept in config.LIVE_STATE_DIR (cached by the workflow between runs); a
+    short base list (NSE / Yahoo hiccup) is used but not kept."""
+    import time as _time
+    now = datetime.now(MARKET_TZ)
+    path = _path(f"wide_universe_{now:%Y%m%d}.json")
     try:
         with open(path) as f:
-            return json.load(f)
+            u = json.load(f)
     except Exception:
-        pass
-    from nse_lcr.live import universe
-    tags = universe()
-    if len(tags) >= 100:
+        from nse_lcr.live import universe
+        u = {"base": universe(), "added": {}, "refreshed": _time.time()}
+        if len(u["base"]) < 100:
+            return dict(u["base"]), set()
         for n in os.listdir(config.LIVE_STATE_DIR):
             if n.startswith("wide_universe_") and n != os.path.basename(path):
                 os.remove(os.path.join(config.LIVE_STATE_DIR, n))
+    else:
+        if _time.time() - u.get("refreshed", 0) < config.LIVE_RESEARCH_WIDE_REFRESH_MIN * 60:
+            return {**u["base"], **u["added"]}, set(u["added"])
+        from data.instruments import get_instrument_key
+        from nse_lcr.live import off_index_large_caps
+        u["refreshed"] = _time.time()
+        try:
+            for sym, (bucket, _mc) in off_index_large_caps().items():
+                if sym in u["base"] or sym in u["added"]:
+                    continue
+                try:
+                    get_instrument_key(sym)
+                except Exception:
+                    continue
+                u["added"][sym] = f"{bucket} · off-index · joined {now:%H:%M}"
+        except Exception as e:
+            print(f"[research-live] wide universe refresh failed: {e!r}")
+    with open(path, "w") as f:
+        json.dump(u, f)
+    return {**u["base"], **u["added"]}, set(u["added"])
+
+
+def _eq_series() -> set:
+    """NSE EQ-series symbols (only these can be bought and squared off intraday; BE / BZ are
+    trade-for-trade), once a day, kept in config.LIVE_STATE_DIR. Empty if NSE is unreachable."""
+    path = _path(f"eq_series_{datetime.now(MARKET_TZ):%Y%m%d}.json")
+    try:
+        with open(path) as f:
+            return set(json.load(f))
+    except Exception:
+        pass
+    from nse_scr.data import eq_series
+    eq = eq_series()
+    if eq:
+        for n in os.listdir(config.LIVE_STATE_DIR):
+            if n.startswith("eq_series_") and n != os.path.basename(path):
+                os.remove(os.path.join(config.LIVE_STATE_DIR, n))
         with open(path, "w") as f:
-            json.dump(tags, f)
-    return tags
+            json.dump(sorted(eq), f)
+    return eq
+
+
+def trending_now(sizes: dict) -> dict:
+    """symbol -> tag for "trending now" stocks: on NSE's live lists (nse_scr.data.watchlist -
+    volume shockers, top gainers, most active; not ones that are only on the losers list), up
+    >= config.LIVE_RESEARCH_TRENDING_MIN_PCT today, >= SCR's MIN_TURNOVER traded, price >=
+    SCR's MIN_PRICE, EQ series; biggest gainers first, at most
+    config.LIVE_RESEARCH_TRENDING_MAX. sizes = wide-universe tags (anything else is a small
+    cap: under Rs 20,000 cr and in no index). {} when NSE is unreachable."""
+    from nse_scr import data as scr_data
+    from nse_scr import strategy as scr
+    w = scr_data.watchlist()
+    if w.empty or "pct" not in w:
+        return {}
+    w = w[w["sources"].fillna("").map(lambda v: bool(set(v.split("+")) - {"loser", ""}))]
+    w = w[(w["pct"] >= config.LIVE_RESEARCH_TRENDING_MIN_PCT) & (w["turnover"] >= scr.MIN_TURNOVER)
+          & (w["ltp"] >= scr.MIN_PRICE)]
+    eq = _eq_series()
+    if eq:
+        w = w[w["symbol"].isin(eq)]
+    out = {}
+    for r in w.sort_values("pct", ascending=False).head(config.LIVE_RESEARCH_TRENDING_MAX).itertuples():
+        vx = getattr(r, "vol_x_week", None)
+        vol = f", volume {vx:.1f}x" if vx is not None and pd.notna(vx) and vx > 0 else ""
+        out[r.symbol] = f"{sizes.get(r.symbol, 'SMALL')} · trending {r.pct:+.1f}%{vol}"
+    return out
 
 
 def _enrich(day_df: pd.DataFrame) -> pd.DataFrame:
@@ -296,10 +365,15 @@ class ResearchPass:
 
     # ---------- per symbol ----------
 
-    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True, wide_tag: str = None):
+    def process_symbol(self, symbol: str, raw_df: pd.DataFrame, allow_new: bool = True, wide_tag: str = None,
+                       join_now: bool = False):
         """raw_df = today's candles as scan_once already fetched them. wide_tag: set (to the
-        stock's size bucket) for a stock only the wide scan covers - then only
-        config.LIVE_RESEARCH_WIDE_STRATEGIES look at it."""
+        stock's tag) for a stock only the wide scan covers - then only
+        config.LIVE_RESEARCH_WIDE_STRATEGIES look at it. join_now: the stock was added during
+        the day (trending now / newly >= Rs 20,000 cr) - it is evaluated from the candle it is
+        first seen on (and again from "now" after a gap of more than
+        config.LIVE_RESEARCH_JOIN_GAP_CANDLES), never on earlier candles: they were picked
+        knowing the stock would trend, so paper-trading them would flatter the results."""
         if self.state is None:
             return
         self.processed.add(symbol)
@@ -307,6 +381,12 @@ class ResearchPass:
         if df is None or df.empty:
             return
         self._update_trades(symbol, df)
+        if wide_tag and join_now and len(df) >= 2:
+            marks = self.state.setdefault("last_ts_wide", {})
+            mark = marks.get(symbol) or self.state["last_ts"].get(symbol)
+            gap = pd.Timedelta(minutes=config.CANDLE_INTERVAL_MINUTES * config.LIVE_RESEARCH_JOIN_GAP_CANDLES)
+            if mark is None or pd.Timestamp(mark) < df["timestamp"].iat[-1] - gap:
+                marks[symbol] = str(df["timestamp"].iat[-2])          # from the newest candle on
         if allow_new:
             self._scan_new_candles(symbol, df, wide_tag)
 
@@ -587,7 +667,7 @@ def _format_entries(trades: list) -> str:
             f"🛑 Stop    {_rs(t['stop_loss'])} ({stop_pct:+.2f}%)\n"
             f"🎯 Target  {_rs(t['target'])} ({tgt_pct:+.2f}%) · {rr:.1f}R\n"
             f"📊 Why: {_why(t)}\n"
-            + (f"🔭 Wide scan: {t['scope']} stock, not on the watchlist\n" if t.get("scope") else "") +
+            + (f"🔭 Wide scan: {t['scope']} · not on the watchlist\n" if t.get("scope") else "") +
             f"🧭 Market: {t['regime'].replace('_', ' ')}\n"
             f"⏹ Exit: {exits}")
     return "\n".join(blocks)

@@ -93,7 +93,7 @@ def test_wide_trade_is_tagged_and_alert_says_so(env):
     (t,) = env.rp.state["trades"]
     assert t["scope"] == "MID · off-index" and t["reason"].endswith("[wide scan: MID · off-index]")
     assert "wide scan" not in rl._why(t) and "win probability 56%" in rl._why(t)
-    assert "Wide scan: MID · off-index stock" in rl._format_entries([t])
+    assert "Wide scan: MID · off-index · not on the watchlist" in rl._format_entries([t])
 
 
 def test_end_of_day_pass_keeps_wide_stocks_to_the_wide_strategies(env, monkeypatch):
@@ -107,19 +107,60 @@ def test_end_of_day_pass_keeps_wide_stocks_to_the_wide_strategies(env, monkeypat
     assert {m for s, _, m in env.calls if s == "X"} == {("BASE", "ML")}
 
 
-def test_universe_is_built_once_a_day_and_short_lists_are_not_kept(env, monkeypatch):
+def test_universe_daily_base_plus_same_day_joiners(env, monkeypatch):
+    import os
+
+    import data.instruments as ins
     import nse_lcr.live as lcr
-    big = {f"S{i}": "MID" for i in range(150)}
-    monkeypatch.setattr(lcr, "universe", lambda: big)
-    assert rl.wide_universe() == big
+    base = {f"S{i}": "MID" for i in range(150)}
+    monkeypatch.setattr(lcr, "universe", lambda: base)
+    assert rl.wide_universe() == (base, set())
 
     def boom():
         raise AssertionError("rebuilt")
     monkeypatch.setattr(lcr, "universe", boom)
-    assert rl.wide_universe() == big                                    # today's file
+    monkeypatch.setattr(lcr, "off_index_large_caps", lambda: {"S1": ("MID", 30000), "NEWCO": ("MID", 20500)})
+    monkeypatch.setattr(ins, "get_instrument_key", lambda s: f"NSE_EQ|{s}")
+    assert rl.wide_universe() == (base, set())                          # inside the refresh interval
+    monkeypatch.setattr(config, "LIVE_RESEARCH_WIDE_REFRESH_MIN", 0)
+    tags, joined = rl.wide_universe()
+    assert joined == {"NEWCO"} and len(tags) == 151 and tags["NEWCO"].startswith("MID · off-index · joined ")
+    assert tags["S1"] == "MID"                                          # already in the base list
     day = datetime.now(rl.MARKET_TZ).strftime("%Y%m%d")
-    import os
     os.remove(os.path.join(config.LIVE_STATE_DIR, f"wide_universe_{day}.json"))
     monkeypatch.setattr(lcr, "universe", lambda: {"A": "MID"})
-    assert rl.wide_universe() == {"A": "MID"}
+    assert rl.wide_universe() == ({"A": "MID"}, set())                 # short list: used, not kept
     assert not any(n.startswith("wide_universe_") for n in os.listdir(config.LIVE_STATE_DIR))
+
+
+def test_trending_now_filters_and_tags(env, monkeypatch):
+    import nse_scr.data as scr_data
+    rows = [dict(symbol="RUN", ltp=300.0, pct=8.4, vol_x_week=5.2, turnover=1e8, sources="gainer+shocker"),
+            dict(symbol="DROP", ltp=300.0, pct=-6.0, vol_x_week=4.0, turnover=1e8, sources="loser"),
+            dict(symbol="FLAT", ltp=300.0, pct=1.0, vol_x_week=None, turnover=1e8, sources="active_value"),
+            dict(symbol="THIN", ltp=300.0, pct=5.0, vol_x_week=None, turnover=1e7, sources="gainer"),
+            dict(symbol="PENNY", ltp=10.0, pct=9.0, vol_x_week=None, turnover=1e8, sources="gainer"),
+            dict(symbol="BIG", ltp=900.0, pct=3.1, vol_x_week=None, turnover=5e8, sources="active_value"),
+            dict(symbol="T2T", ltp=300.0, pct=7.0, vol_x_week=None, turnover=1e8, sources="gainer")]
+    monkeypatch.setattr(scr_data, "watchlist", lambda: pd.DataFrame(rows))
+    monkeypatch.setattr(rl, "_eq_series", lambda: {"RUN", "DROP", "FLAT", "THIN", "PENNY", "BIG"})
+    out = rl.trending_now({"BIG": "LARGE"})
+    assert out == {"RUN": "SMALL · trending +8.4%, volume 5.2x", "BIG": "LARGE · trending +3.1%"}
+    assert list(out) == ["RUN", "BIG"]
+    monkeypatch.setattr(scr_data, "watchlist", lambda: pd.DataFrame(columns=["symbol"]))
+    assert rl.trending_now({}) == {}
+
+
+def test_stock_added_during_the_day_starts_at_the_candle_it_appears_on(env):
+    ts = env.df["timestamp"]
+    env.rp.process_symbol("T", env.df.iloc[:25], wide_tag="SMALL · trending +5.0%", join_now=True)
+    assert _evaluated(env.calls, "ML") == [ts.iat[24]]                  # no candles from before it was seen
+    env.calls.clear()
+    env.rp.process_symbol("T", env.df.iloc[:26], wide_tag="SMALL · trending +5.2%", join_now=True)
+    assert _evaluated(env.calls, "ML") == [ts.iat[25]]                  # next run: carries on
+    env.calls.clear()
+    env.rp.process_symbol("T", env.df, wide_tag="SMALL · trending +6.0%", join_now=True)
+    assert _evaluated(env.calls, "ML") == [ts.iat[29]]                  # back after 20 min: from "now" again
+    env.calls.clear()
+    env.rp.process_symbol("U", env.df, wide_tag="MID")                  # a base-list stock keeps its backlog
+    assert len(_evaluated(env.calls, "ML")) == 30 - config.MIN_WARMUP_CANDLES

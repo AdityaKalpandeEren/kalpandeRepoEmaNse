@@ -374,16 +374,29 @@ TELEGRAM_EXTRA_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_EXTRA_CHAT_IDS
 LIVE_STATE_DIR = os.getenv("LIVE_STATE_DIR", "live_state")
 LIVE_ALERT_MAX_AGE_MIN = 15
 LIVE_RESEARCH_V2_LIVE_CONTEXT = os.getenv("LIVE_RESEARCH_V2_LIVE_CONTEXT", "true").lower() == "true"
-# Wide scan (added 2026-10-13, user): the ML filters also scan NSE's mega / large / mid
-# caps - every NIFTY 50 / NIFTY 100 / Midcap 150 stock plus off-index companies with
-# market cap >= Rs 20,000 cr (the NSE LCR universe, paper_trading/research_live.py
-# wide_universe) - on top of watchlist.txt + the near-breakout shortlist that every
-# research strategy scans. The other research strategies keep the original list.
-# Their alerts say "Wide scan: <size> stock". "" turns the wide scan off.
+# Wide scan (added 2026-10-13, user): the ML filters also scan, on top of watchlist.txt +
+# the near-breakout shortlist that every research strategy scans:
+#  1. NSE's mega / large / mid caps - every NIFTY 50 / NIFTY 100 / Midcap 150 stock plus
+#     off-index companies with market cap >= Rs 20,000 cr (the NSE LCR universe,
+#     paper_trading/research_live.py wide_universe), re-screened every
+#     LIVE_RESEARCH_WIDE_REFRESH_MIN on Yahoo's intraday market cap, so a stock crossing
+#     Rs 20,000 cr joins the same day;
+#  2. "trending now", any size (research_live.trending_now): NSE's live volume-shocker /
+#     top-gainer / most-active lists (SCR's feed), up >= LIVE_RESEARCH_TRENDING_MIN_PCT
+#     today, >= Rs 5 cr traded, price >= Rs 20, EQ series.
+# Stocks added during the day are evaluated from the candle they first appear on, never on
+# earlier ones. The other research strategies keep the original list. Alerts say
+# "Wide scan: <tag>". LIVE_RESEARCH_WIDE_STRATEGIES="" turns the wide scan off,
+# LIVE_RESEARCH_TRENDING=false only the trending part.
 LIVE_RESEARCH_WIDE_STRATEGIES = [s.strip() for s in os.getenv(
     "LIVE_RESEARCH_WIDE_STRATEGIES", "L_ML_META,L_ML_META_V2,L_ML_META_V3").split(",") if s.strip()]
 LIVE_RESEARCH_WIDE_WORKERS = 6          # parallel candle downloads
 LIVE_RESEARCH_WIDE_BUDGET_S = 180       # per run; stocks not reached are first in line next run
+LIVE_RESEARCH_WIDE_REFRESH_MIN = 30     # re-screen the off-index Rs 20,000 cr list this often
+LIVE_RESEARCH_TRENDING = os.getenv("LIVE_RESEARCH_TRENDING", "true").lower() == "true"
+LIVE_RESEARCH_TRENDING_MIN_PCT = 2.0    # % up today
+LIVE_RESEARCH_TRENDING_MAX = 80         # per run, biggest gainers first
+LIVE_RESEARCH_JOIN_GAP_CANDLES = 2      # a stock added during the day that was unseen for longer restarts at "now"
 # EOD report goes out on the first run at/after this time (IST). Research
 # trades are all out by the 15:15 square-off (the last research candle
 # closes then), so 15:20 is final - and it lands inside the existing

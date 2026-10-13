@@ -104,3 +104,14 @@ def test_short_pnl_sign_charges_and_lower_circuit():
     v = float(y.iloc[i + 1]["open"])
     y.iloc[i + 1, :4] = [v, v, v, v]                              # lower-circuit lock: can't sell
     assert S.simulate_short("T", y, sig, mode="lod") is None
+
+
+def test_watchlist_survives_an_empty_volume_shocker_feed(monkeypatch):
+    import pandas as pd
+
+    from nse_scr import data as D
+    monkeypatch.setattr(D, "shockers", lambda: pd.DataFrame())
+    monkeypatch.setattr(D, "movers", lambda: pd.DataFrame([{"symbol": "ABC", "ltp": 100.0, "pct": 4.0, "volume": 1e6,
+                                                            "turnover": 1e8, "source": "gainer"}]))
+    w = D.watchlist()                                   # raised KeyError 'vol_x_week' on 2026-10-13 13:58
+    assert list(w["symbol"]) == ["ABC"] and w["vol_x_week"].isna().all()

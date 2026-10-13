@@ -92,20 +92,46 @@ def _research_after_close(now):
             rp.end()
 
 
+def _with_timeout(fn, seconds: float, default):
+    """fn() in a daemon thread, or `default` if it hasn't finished within `seconds`: a slow
+    NSE / Yahoo call (they retry with long sleeps) must not eat the scan's 10 minutes. The
+    thread is abandoned, never waited for."""
+    import threading
+    box = []
+
+    def run():
+        try:
+            box.append(fn())
+        except Exception as e:
+            print(f"Research wide-scan input failed: {e!r}")
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    return box[0] if box else default
+
+
 def _research_wide(research, access_token: str, done: set):
     """config.LIVE_RESEARCH_WIDE_STRATEGIES (the ML filters) also scan NSE's mega / large /
-    mid caps that aren't in this run's list: candles fetched in parallel, the stocks
-    evaluated longest ago first, within config.LIVE_RESEARCH_WIDE_BUDGET_S - the rest are
-    first in line next run (no candle is skipped, the research pass catches up)."""
+    mid caps (>= Rs 20,000 cr, re-screened during the day) and today's trending stocks that
+    aren't in this run's list: candles fetched in parallel, the stocks evaluated longest ago
+    first, within config.LIVE_RESEARCH_WIDE_BUDGET_S - the rest are first in line next run.
+    Stocks added during the day start from the candle they appear on (join_now)."""
     from concurrent.futures import ThreadPoolExecutor
-    from paper_trading.research_live import wide_universe
+    from paper_trading.research_live import trending_now, wide_universe
     if research.state.get("report_sent"):
         return                      # research day over (15:20 report sent): no new trades
     now = research.now
     if (now.hour * 60 + now.minute) - (9 * 60 + 15) < (config.MIN_WARMUP_CANDLES + 1) * config.CANDLE_INTERVAL_MINUTES:
         return                      # no research signal can fire before the warm-up candles exist
     t0 = time.time()
-    tags = wide_universe()
+    tags, dynamic = _with_timeout(wide_universe, 90, ({}, set()))
+    n_big, n_new_big = len(tags), len(dynamic)
+    trend = _with_timeout(lambda: trending_now(tags), 40, {}) if config.LIVE_RESEARCH_TRENDING else {}
+    for sym, tag in trend.items():
+        if sym not in tags:
+            dynamic.add(sym)
+        tags[sym] = tag
     marks = research.state.get("last_ts_wide", {})
     extra = sorted((s for s in tags if s not in done), key=lambda s: marks.get(s) or "")
     if not extra:
@@ -126,12 +152,14 @@ def _research_wide(research, access_token: str, done: set):
         if df is None or df.empty:
             continue
         try:
-            research.process_symbol(sym, df, wide_tag=tags[sym])
+            research.process_symbol(sym, df, wide_tag=tags[sym], join_now=sym in dynamic)
             n += 1
         except Exception as e:
-            print(f"Research wide-scan error on {sym}: {e!r}")
-    print(f"Research wide scan ({', '.join(config.LIVE_RESEARCH_WIDE_STRATEGIES)}): {n}/{len(extra)} more NSE "
-          f"stocks (universe {len(tags)}), candles {t_fetch:.0f} s, total {time.time() - t0:.0f} s", flush=True)
+            print(f"Research wide scan error on {sym}: {e!r}")
+    n_small = sum(1 for s in trend if s not in done and trend[s].startswith("SMALL"))
+    print(f"Research wide scan ({', '.join(config.LIVE_RESEARCH_WIDE_STRATEGIES)}): {n}/{len(extra)} more NSE stocks - "
+          f">= Rs 20,000 cr list {n_big} ({n_new_big} joined today), trending now {len(trend)} ({n_small} small caps); "
+          f"candles {t_fetch:.0f} s, total {time.time() - t0:.0f} s", flush=True)
 
 
 def main():
