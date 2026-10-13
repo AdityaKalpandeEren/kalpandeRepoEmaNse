@@ -42,6 +42,7 @@ import pandas as pd
 
 import config
 from strategy.regime import classify, is_tradeable, Regime
+from strategy.session import minutes_since_open
 from strategy.ml_features import extract_features, FEATURE_COLUMNS
 from strategy.ml_features_v2 import extract_features_v2
 
@@ -78,20 +79,21 @@ def _atr(row) -> float:
     return _f(row.get(f"atr_{config.ATR_PERIOD}"))
 
 
-def _stop_and_target(row, direction: str, structural_level: float = None):
+def _stop_and_target(row, direction: str, structural_level: float = None, atr_mult: float = None):
     """One stop convention for every model (see module docstring).
 
     Stop = ATR * multiplier from entry, extended to sit just beyond a
     structural level when that level is nearby. Target = stop distance *
     reward:risk. Returns (stop, target, risk) or None when the ATR is
     unusable or the implied risk breaches config.MAX_RISK_PCT.
+    atr_mult overrides config.ATR_STOP_MULT (only the loss-cut variants use it).
     """
     entry = _f(row.get("close"))
     atr = _atr(row)
     if entry <= 0 or atr <= 0:
         return None
 
-    mult = config.ATR_STOP_MULT
+    mult = config.ATR_STOP_MULT if atr_mult is None else atr_mult
     if direction == "short":
         mult += config.SHORT_STOP_ATR_MULT_EXTRA
 
@@ -138,8 +140,8 @@ def _aggressor_share(row, direction: str) -> float:
     return buy_share if direction == "long" else (1.0 - buy_share)
 
 
-def _build(symbol, name, direction, row, regime: Regime, reason, score, structural_level=None):
-    st = _stop_and_target(row, direction, structural_level)
+def _build(symbol, name, direction, row, regime: Regime, reason, score, structural_level=None, atr_mult=None):
+    st = _stop_and_target(row, direction, structural_level, atr_mult)
     if st is None:
         return None
     stop, target, _ = st
@@ -476,6 +478,23 @@ def model_j_vwap_band_reversion(symbol, df, direction, regime) -> Optional[Strat
     everything else in this file: high win rate WITHOUT giving up
     reward:risk. Worth testing on our own data, not trusting the
     citation - see config.VWAP_BAND_Z_THRESHOLD for the numbers."""
+    return _vwap_band_signal(symbol, df, direction, regime, "J_VWAP_BAND_REVERSION")
+
+
+def model_j_vwap_lc(symbol, df, direction, regime) -> Optional[StrategySignal]:
+    """J_VWAP_LC - loss-cut variant of J (added 2026-10-13): the same entry,
+    but a 3 x ATR stop (config.LC_ATR_STOP_MULT) and only signals whose fill
+    (next candle open) is before 12:00 IST. Multi-year replay of this code (48 large caps,
+    2023-01..2026-09): 2.1 trades/day instead of 29, -0.18R instead of
+    -0.47R a trade, 3% of the original's loss. Still negative - it cuts the
+    loss, it does not make J profitable."""
+    if minutes_since_open(df.iloc[-1].get("timestamp")) + config.CANDLE_INTERVAL_MINUTES \
+            >= config.VWAP_LC_LAST_FILL_MINUTES:
+        return None
+    return _vwap_band_signal(symbol, df, direction, regime, "J_VWAP_LC", atr_mult=config.LC_ATR_STOP_MULT)
+
+
+def _vwap_band_signal(symbol, df, direction, regime, name, atr_mult=None) -> Optional[StrategySignal]:
     if direction != "long":
         return None
     row = df.iloc[-1]
@@ -491,9 +510,9 @@ def model_j_vwap_band_reversion(symbol, df, direction, regime) -> Optional[Strat
     if not (stretched and reverting and volume_ok):
         return None
 
-    return _build(symbol, "J_VWAP_BAND_REVERSION", direction, row, regime,
+    return _build(symbol, name, direction, row, regime,
                   f"vwap_z {z:.2f} (>= {config.VWAP_BAND_Z_THRESHOLD:.1f} SD stretch), turning up",
-                  70, _f(row.get("low")))
+                  70, _f(row.get("low")), atr_mult=atr_mult)
 
 
 def model_k_rsi2_reversion(symbol, df, direction, regime) -> Optional[StrategySignal]:
@@ -607,10 +626,25 @@ def model_score_engine(symbol, df, direction, regime) -> Optional[StrategySignal
     difference in the report is attributable to the combination method,
     not to different information.
     """
+    return _score_engine_signal(symbol, df, direction, regime, "SCORE_ENGINE", config.SCORE_MIN_TOTAL)
+
+
+def model_score_engine_lc(symbol, df, direction, regime) -> Optional[StrategySignal]:
+    """SCORE_ENGINE_LC - loss-cut variant (added 2026-10-13): the same score,
+    but it must reach config.SCORE_LC_MIN_TOTAL (65, not 55) and the stop is
+    3 x ATR (config.LC_ATR_STOP_MULT). Multi-year replay of this code (48 large
+    caps, 2023-01..2026-09): 12.7 trades/day instead of 38, -0.11R instead of
+    -0.25R a trade, 15% of the original's loss. Still negative - it cuts the
+    loss, it does not make the Score Engine profitable."""
+    return _score_engine_signal(symbol, df, direction, regime, "SCORE_ENGINE_LC", config.SCORE_LC_MIN_TOTAL,
+                                atr_mult=config.LC_ATR_STOP_MULT)
+
+
+def _score_engine_signal(symbol, df, direction, regime, name, min_total, atr_mult=None) -> Optional[StrategySignal]:
     row = df.iloc[-1]
     comps = _component_scores(row, df, direction)
     total = 100.0 * sum(comps[k] * w for k, w in config.SCORE_WEIGHTS.items())
-    if total < config.SCORE_MIN_TOTAL:
+    if total < min_total:
         return None
 
     # Floor check, applied only to the components that decide whether the
@@ -623,7 +657,7 @@ def model_score_engine(symbol, df, direction, regime) -> Optional[StrategySignal
 
     struct_level = _f(row.get("low")) if direction == "long" else _f(row.get("high"))
     reason = " ".join(f"{k}={v:.2f}" for k, v in comps.items())
-    return _build(symbol, "SCORE_ENGINE", direction, row, regime, reason, total, struct_level)
+    return _build(symbol, name, direction, row, regime, reason, total, struct_level, atr_mult=atr_mult)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -957,7 +991,11 @@ BASE_MODELS = {
 
 ENTRY_MODELS = {**BASE_MODELS, "L_ML_META": model_l_ml_meta,
                 "L_ML_META_V2": model_l_ml_meta_v2,
-                "L_ML_META_V3": model_l_ml_meta_v3}
+                "L_ML_META_V3": model_l_ml_meta_v3,
+                # loss-cut variants: deliberately NOT in BASE_MODELS, so the ML
+                # filters (and their datasets) never see them as candidate setups
+                "SCORE_ENGINE_LC": model_score_engine_lc,
+                "J_VWAP_LC": model_j_vwap_lc}
 
 
 def evaluate_all(symbol: str, df: pd.DataFrame, models: dict = None,

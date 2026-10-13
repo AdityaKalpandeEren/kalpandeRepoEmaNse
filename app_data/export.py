@@ -61,6 +61,8 @@ MARKETS = {
 RESEARCH_NAMES = {   # code name -> (display name, group, one-line description)
     "SCORE_ENGINE": ("Score Engine", "Research", "Multi-factor score on 5-min candles, long only, research paper"),
     "J_VWAP_BAND_REVERSION": ("VWAP Band Reversion", "Research", "Mean reversion from the lower VWAP band"),
+    "SCORE_ENGINE_LC": ("Score Engine LC", "Research", "Loss-cut Score Engine: score 65+, stop 3x ATR, research paper"),
+    "J_VWAP_LC": ("VWAP Reversion LC", "Research", "Loss-cut VWAP bounce: fills before 12:00, stop 3x ATR"),
     "K_RSI2_REVERSION": ("RSI-2 Reversion", "Research", "Short-term RSI(2) oversold bounce"),
     "L_ML_META": ("ML Meta V1", "ML filters", "ML meta-filter on top of the rule setups (V1)"),
     "L_ML_META_V1_2": ("ML Meta V1.2", "ML filters", "V1 meta-filter, no-news variant"),
