@@ -9,34 +9,45 @@ is small and changes rarely - weekly refresh is more than enough).
 import os
 import gzip
 import csv
+import threading
 import requests
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nse_instruments.csv")
 INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz"
 
 _cache = {}
+_lock = threading.RLock()   # parallel fetchers (prefetch_today) all load on first use
 
 
 def refresh_instrument_master():
-    resp = requests.get(INSTRUMENTS_URL)
-    resp.raise_for_status()
-    raw = gzip.decompress(resp.content).decode("utf-8")
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        f.write(raw)
-    _cache.clear()
-    print(f"Saved instrument master to {CACHE_FILE}")
+    with _lock:
+        resp = requests.get(INSTRUMENTS_URL)
+        resp.raise_for_status()
+        raw = gzip.decompress(resp.content).decode("utf-8")
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            f.write(raw)
+        _cache.clear()
+        print(f"Saved instrument master to {CACHE_FILE}")
 
 
 def _load_cache():
-    if not os.path.exists(CACHE_FILE):
-        refresh_instrument_master()
-    with open(CACHE_FILE, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # Only keep NSE cash-market equities
-            if row.get("instrument_type") == "EQUITY":
-                _cache[row["tradingsymbol"]] = row["instrument_key"]
-                _names[row["tradingsymbol"]] = row.get("name") or ""
+    # Locked, and filled in one step: other threads must never see a half-loaded
+    # cache (lookups failed for most symbols when 6 threads loaded at once).
+    with _lock:
+        if _cache:
+            return
+        if not os.path.exists(CACHE_FILE):
+            refresh_instrument_master()
+        keys, names = {}, {}
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Only keep NSE cash-market equities
+                if row.get("instrument_type") == "EQUITY":
+                    keys[row["tradingsymbol"]] = row["instrument_key"]
+                    names[row["tradingsymbol"]] = row.get("name") or ""
+        _names.update(names)
+        _cache.update(keys)
 
 
 _names = {}
