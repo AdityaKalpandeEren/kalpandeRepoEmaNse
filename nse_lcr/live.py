@@ -384,6 +384,11 @@ def eod_report(st, bars, telegram):
                 lines.append(f"ALL-TIME {kind}: {len(k)} trades, Rs {k['pnl'].sum():+,.0f}, win {(k['net_pct'] > 0).mean() * 100:.0f}%, "
                              f"avg {k['net_pct'].mean():+.2f}%")
         lines.append(f"ALL-TIME total: {len(t)} closed trades, Rs {t['pnl'].sum():+,.0f}")
+        # Closed trades are mostly day-0 stops by design (winners are carried), so
+        # the closed total alone looks worse than the book really is.
+        if open_sw:
+            lines.append(f"ALL-TIME incl. {len(open_sw)} open swing: Rs {t['pnl'].sum() + unreal:+,.0f} "
+                         f"(closed {t['pnl'].sum():+,.0f} + open {unreal:+,.0f}, before sell charges)")
     notify("\n".join(lines), telegram)
 
 
