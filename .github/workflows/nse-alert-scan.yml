@@ -452,6 +452,145 @@ jobs:
           retention-days: 30
 
 
+  # V8 trend following (v8/live.py): buy NSE stocks / ETFs at a 2-year closing high,
+  # 10 x ATR(42) trailing stop from the highest close, max 30 names, 1% risk per
+  # name (Wilcox & Crittenden 2005 / Zarattini, Pagani & Wilcox 2025). Rs 10 lakh
+  # PAPER, separate from every other system (own state, own Telegram tag). Reads
+  # V5's NSE data cache read-only, exactly like V7. Same cron-job.org trigger and
+  # once-a-day marker pattern as V5 / V7.
+  v8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: nse-v8
+      cancel-in-progress: false
+
+    steps:
+      - name: Trading window check (Mon-Fri 9:20-15:30 IST)
+        id: win
+        run: |
+          hhmm=$(TZ=Asia/Kolkata date +%H%M); dow=$(TZ=Asia/Kolkata date +%u)
+          if [ "$dow" -le 5 ] && [ "$hhmm" -ge 0920 ] && [ "$hhmm" -le 1530 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "outside the V8 window ($hhmm IST) - nothing to do"
+          fi
+
+      - name: Already done today?
+        id: done
+        if: steps.win.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .v8_done
+          key: nse-v8-done-${{ github.run_id }}
+          restore-keys: |
+            nse-v8-done-
+
+      - name: Check marker date
+        id: today
+        if: steps.win.outputs.run == 'true'
+        run: |
+          d=$(TZ=Asia/Kolkata date +%F)
+          if [ -f .v8_done ] && [ "$(cat .v8_done)" = "$d" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "V8 already ran today ($d)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        run: pip install -r requirements.txt -r v5/requirements-live.txt
+
+      # V5's NSE end-of-day data (read-only: this job never saves this key)
+      - name: Restore NSE data from the V5 cache
+        id: v5data
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            live_state/v5
+            swing/cache
+          key: nse-v5-readonly-${{ github.run_id }}
+          restore-keys: |
+            nse-v5-
+
+      - name: Restore V8 data fallback (only if V5's cache is missing)
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true' && steps.v5data.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: swing/cache
+          key: nse-v8-data-${{ github.run_id }}
+          restore-keys: |
+            nse-v8-data-
+
+      - name: Restore V8 state
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: live_state/v8
+          key: nse-v8-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nse-v8-
+
+      - name: Run V8 step
+        id: v8
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true'
+        timeout-minutes: 40
+        run: python -m v8.live
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIVE_RESEARCH_CHAT_ID: ${{ secrets.LIVE_RESEARCH_CHAT_ID }}
+          TELEGRAM_EXTRA_CHAT_IDS: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}   # second receiver (group)
+
+      - name: Save V8 state
+        if: always() && steps.win.outputs.run == 'true' && steps.v8.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: live_state/v8
+          key: nse-v8-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save V8 data fallback (only if V5's cache is missing)
+        if: always() && steps.win.outputs.run == 'true' && steps.v8.outputs.changed == 'true' && steps.v5data.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: swing/cache
+          key: nse-v8-data-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Mark today done
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true' && steps.v8.outcome == 'success' && hashFiles('live_state/v8/state.json') != ''
+        run: |
+          d=$(TZ=Asia/Kolkata date +%F)
+          if python -c "import json,sys; sys.exit(0 if json.load(open('live_state/v8/state.json')).get('last_day')=='$d' else 1)"; then
+            echo "$d" > .v8_done; echo "marked $d"
+          fi
+
+      - name: Save done marker
+        if: steps.win.outputs.run == 'true' && steps.today.outputs.skip != 'true' && hashFiles('.v8_done') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .v8_done
+          key: nse-v8-done-${{ github.run_id }}
+
+      - name: Upload V8 trades
+        if: always() && steps.win.outputs.run == 'true' && steps.v8.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-v8-${{ github.run_id }}
+          path: live_state/v8
+          if-no-files-found: ignore
+          retention-days: 30
+
+
   # NSE SCR - Volume Shockers & Runners (nse_scr/live.py): dynamic watchlist
   # rebuilt every run from NSE's live screeners (volume gainers, top gainers,
   # most active), LARGE / MID / SMALL tags, ⚡📡 shocker watch alerts and

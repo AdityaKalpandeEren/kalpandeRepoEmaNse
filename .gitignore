@@ -36,3 +36,6 @@ nse_scr/cache/
 
 # NSE LCR research data
 nse_lcr/cache/
+
+# V8 research outputs (python -m v8.research rebuilds them)
+v8/results/
