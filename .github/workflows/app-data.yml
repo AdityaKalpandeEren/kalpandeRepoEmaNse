@@ -85,6 +85,13 @@ jobs:
           path: live_state/v7
           key: ${{ steps.plan.outputs.nse_v7 }}
 
+      - name: Restore V8 state
+        if: steps.plan.outputs.nse_v8 != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: live_state/v8
+          key: ${{ steps.plan.outputs.nse_v8 }}
+
       - name: Restore NSE SCR state
         if: steps.plan.outputs.nse_scr != ''
         uses: actions/cache/restore@v4
